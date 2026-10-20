@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .api import ApiClient, new_session_id
+from .panel import MemoryPanel
 from .widgets import ChatView, Composer, StatusDot
 
 
@@ -190,8 +192,19 @@ class MainWindow(QMainWindow):
         self.chat = ChatView()
         self.stack.addWidget(self.chat)
         self.stack.addWidget(self._build_offline())
-        layout.addWidget(self.stack, 1)
 
+        self.panel = MemoryPanel(self.client)
+        self.panel.setVisible(False)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.stack)
+        self.splitter.addWidget(self.panel)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setSizes([560, 420])
+
+        layout.addWidget(self.splitter, 1)
         layout.addWidget(self._build_footer())
         self.setCentralWidget(root)
 
@@ -213,6 +226,10 @@ class MainWindow(QMainWindow):
         file_menu.addAction(quit_action)
 
         tools = menu.addMenu("工具")
+        panel_action = QAction("记忆面板（笔记 / 洞察 / 状态）", self)
+        panel_action.setShortcut("Ctrl+M")
+        panel_action.triggered.connect(self.toggle_panel)
+        tools.addAction(panel_action)
         memory_action = QAction("记忆检索…", self)
         memory_action.setShortcut("Ctrl+F")
         memory_action.triggered.connect(self.open_memory)
@@ -251,9 +268,10 @@ class MainWindow(QMainWindow):
         self.pending_btn = QPushButton("待读 0")
         self.pending_btn.setObjectName("Ghost")
         self.pending_btn.clicked.connect(self.show_pending)
-        memory_btn = QPushButton("记忆")
-        memory_btn.setObjectName("Ghost")
-        memory_btn.clicked.connect(self.open_memory)
+        self.panel_btn = QPushButton("记忆")
+        self.panel_btn.setObjectName("Ghost")
+        self.panel_btn.setToolTip("笔记 / 洞察 / 状态")
+        self.panel_btn.clicked.connect(self.toggle_panel)
         settings_btn = QPushButton("设置")
         settings_btn.setObjectName("Ghost")
         settings_btn.clicked.connect(self.open_settings)
@@ -262,7 +280,7 @@ class MainWindow(QMainWindow):
         right.setContentsMargins(0, 0, 14, 0)
         right.setSpacing(6)
         right.addWidget(self.pending_btn)
-        right.addWidget(memory_btn)
+        right.addWidget(self.panel_btn)
         right.addWidget(settings_btn)
 
         row = QHBoxLayout(header)
@@ -393,6 +411,8 @@ class MainWindow(QMainWindow):
         self.chat.add("system", f"已连接 {self.base_url}，会话 {self.session_id[:8]}")
         self.client.fetch_history(self.session_id)
         self.refresh_pending()
+        if self.panel.isVisible():
+            self.panel.refresh()
 
     def _on_offline(self, message: str) -> None:
         self.dot.set_state("offline")
@@ -488,6 +508,8 @@ class MainWindow(QMainWindow):
             self.stream_bubble.set_meta(" · ".join(meta_bits + ([existing] if existing else [])))
         self.stream_bubble = None
         self._set_busy(False)
+        if self.panel.isVisible():
+            self.panel.refresh()
 
     def _on_stream_failed(self, message: str) -> None:
         if self.stream_bubble is not None:
@@ -538,6 +560,16 @@ class MainWindow(QMainWindow):
             self._on_offline("尚未登录")
             return
         MemoryDialog(self.client, self).exec()
+
+    def toggle_panel(self) -> None:
+        """右侧记忆抽屉：笔记 / 洞察 / 状态。"""
+        show = not self.panel.isVisible()
+        self.panel.setVisible(show)
+        self.panel_btn.setText("收起" if show else "记忆")
+        if show:
+            self.splitter.setSizes([560, 420])
+            if self.online:
+                self.panel.refresh()
 
     def open_configurator(self) -> None:
         """独立进程打开配置器：它直接读写 .env，不依赖后端是否在跑。"""

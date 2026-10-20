@@ -49,6 +49,9 @@ client.authFailed.connect(lambda m: check("登录", False, m))
 def on_login(payload: dict) -> None:
     check("登录", bool(payload.get("token")), f"userId={payload.get('userId')}")
     client.fetch_pending()
+    client.fetch_notes(5)
+    client.fetch_insights(5, True)
+    client.fetch_me()
     client.send_message("今天有点累，随便说句话就行", new_session_id())
 
 
@@ -80,6 +83,40 @@ def on_done(payload: dict) -> None:
     state["done"] = True
     check("流式对话", state["tokens"] >= 2, f"{state['tokens']} 个 token，共 {len(state['text'])} 字")
     print(f"  回复片段: {state['text'][:60]!r}")
+    # 接着走笔记 CRUD（新建 → 删除），最后在 on_note_deleted 里收尾
+    client.create_note("联调笔记", "这条由 api_smoke.py 自动创建，稍后会删掉。")
+
+
+def on_notes(items: list) -> None:
+    state["notes"] = len(items)
+    has_vec = all(bool(i.get("hasEmbedding")) for i in items) if items else True
+    check("笔记列表", isinstance(items, list), f"{len(items)} 条，全部已向量化={has_vec}")
+
+
+def on_insights(items: list) -> None:
+    state["insights"] = len(items)
+    check("洞察接口", isinstance(items, list), f"{len(items)} 条")
+
+
+def on_me(payload: dict) -> None:
+    state["me"] = payload
+    user = payload.get("user") or {}
+    check(
+        "我的状态",
+        bool(user.get("dailyProactiveCap") is not None),
+        f"每日上限={user.get('dailyProactiveCap')} · 订阅额度={user.get('subscriptionQuota')}",
+    )
+
+
+def on_note_created(payload: dict) -> None:
+    note_id = payload.get("id")
+    check("新建笔记", bool(note_id), f"id={note_id}")
+    if note_id:
+        client.delete_note(int(note_id))
+
+
+def on_note_deleted(note_id: int) -> None:
+    check("删除笔记", True, f"id={note_id}")
     finish()
 
 
@@ -88,11 +125,19 @@ client.tokenReceived.connect(on_token)
 client.streamDone.connect(on_done)
 client.streamFailed.connect(on_fail)
 client.pendingReceived.connect(on_pending)
+client.notesReceived.connect(on_notes)
+client.insightsReceived.connect(on_insights)
+client.meReceived.connect(on_me)
+client.noteCreated.connect(on_note_created)
+client.noteDeleted.connect(on_note_deleted)
 client.requestFailed.connect(lambda scene, msg: check(scene, False, msg))
 
 
 def finish() -> None:
     check("待读接口已调用", state["pending"] is not None)
+    check("笔记接口已调用", state.get("notes") is not None)
+    check("洞察接口已调用", state.get("insights") is not None)
+    check("状态接口已调用", state.get("me") is not None)
     print()
     if failures:
         print(f"{len(failures)} 项失败: {', '.join(failures)}")

@@ -245,6 +245,7 @@ pnpm push:test --kind=bark --url=... --e2e
 | GET | `/notes` | 游标分页列表 |
 | DELETE | `/notes/:id` | 删除 |
 | GET | `/memory/search?q=&topK=` | 混合检索 + RRF |
+| GET | `/insights?limit=&includeSuperseded=` | 洞察列表（含被取代溯源） |
 | POST | `/chat/stream` | SSE：`meta` → `token`* → `done`/`error` |
 | GET | `/chat/history?sessionId=` | 会话回填 |
 | GET | `/proactive/pending` | 未读主动消息全文 |

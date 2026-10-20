@@ -37,6 +37,11 @@ class ApiClient(QObject):
     pendingReceived = Signal(list)
     historyReceived = Signal(list)
     searchReceived = Signal(list)
+    notesReceived = Signal(list)
+    noteCreated = Signal(dict)
+    noteDeleted = Signal(int)
+    insightsReceived = Signal(list)
+    meReceived = Signal(dict)
     requestFailed = Signal(str, str)  # (场景, 错误信息)
 
     def __init__(self, base_url: str = "http://127.0.0.1:3000", parent: QObject | None = None):
@@ -53,9 +58,18 @@ class ApiClient(QObject):
 
     # ---------------------------------------------------------------- 基础
 
-    def _req(self, path: str, auth: bool = True, accept: str = "application/json") -> QNetworkRequest:
+    def _req(
+        self,
+        path: str,
+        auth: bool = True,
+        accept: str = "application/json",
+        with_body: bool = True,
+    ) -> QNetworkRequest:
         req = QNetworkRequest(QUrl(f"{self.base_url}{path}"))
-        req.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
+        # DELETE 没有 body 时不能带 Content-Type: application/json，
+        # 否则 Fastify 会报 "Body cannot be empty when content-type is set"
+        if with_body:
+            req.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
         req.setRawHeader(QByteArray(b"Accept"), QByteArray(accept.encode()))
         if auth and self.token:
             req.setRawHeader(QByteArray(b"Authorization"), QByteArray(f"Bearer {self.token}".encode()))
@@ -257,6 +271,83 @@ class ApiClient(QObject):
                 self.searchReceived.emit(list(data.get("items") or []))
             except ValueError:
                 self.requestFailed.emit("记忆检索", "返回不是 JSON")
+
+        reply.finished.connect(done)
+
+    # ---------------------------------------------------------------- 笔记 / 洞察 / 我的状态
+
+    def fetch_notes(self, limit: int = 50) -> None:
+        reply = self.nam.get(self._req(f"/notes?limit={limit}"))
+
+        def done() -> None:
+            reply.deleteLater()
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                self.requestFailed.emit("笔记列表", self._error_text(reply))
+                return
+            try:
+                data = json.loads(bytes(reply.readAll()).decode("utf-8"))
+                self.notesReceived.emit(list(data.get("items") or []))
+            except ValueError:
+                self.requestFailed.emit("笔记列表", "返回不是 JSON")
+
+        reply.finished.connect(done)
+
+    def create_note(self, title: str, content: str) -> None:
+        reply = self.nam.post(self._req("/notes"), self._body({"title": title, "content": content}))
+
+        def done() -> None:
+            reply.deleteLater()
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                self.requestFailed.emit("新建笔记", self._error_text(reply))
+                return
+            try:
+                self.noteCreated.emit(json.loads(bytes(reply.readAll()).decode("utf-8")))
+            except ValueError:
+                self.noteCreated.emit({})
+
+        reply.finished.connect(done)
+
+    def delete_note(self, note_id: int) -> None:
+        reply = self.nam.deleteResource(self._req(f"/notes/{note_id}", with_body=False))
+
+        def done() -> None:
+            reply.deleteLater()
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                self.requestFailed.emit("删除笔记", self._error_text(reply))
+                return
+            self.noteDeleted.emit(note_id)
+
+        reply.finished.connect(done)
+
+    def fetch_insights(self, limit: int = 30, include_superseded: bool = True) -> None:
+        flag = '1' if include_superseded else '0'
+        reply = self.nam.get(self._req(f"/insights?limit={limit}&includeSuperseded={flag}"))
+
+        def done() -> None:
+            reply.deleteLater()
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                self.requestFailed.emit("洞察", self._error_text(reply))
+                return
+            try:
+                data = json.loads(bytes(reply.readAll()).decode("utf-8"))
+                self.insightsReceived.emit(list(data.get("items") or []))
+            except ValueError:
+                self.requestFailed.emit("洞察", "返回不是 JSON")
+
+        reply.finished.connect(done)
+
+    def fetch_me(self) -> None:
+        reply = self.nam.get(self._req("/me"))
+
+        def done() -> None:
+            reply.deleteLater()
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                self.requestFailed.emit("我的状态", self._error_text(reply))
+                return
+            try:
+                self.meReceived.emit(json.loads(bytes(reply.readAll()).decode("utf-8")))
+            except ValueError:
+                self.requestFailed.emit("我的状态", "返回不是 JSON")
 
         reply.finished.connect(done)
 

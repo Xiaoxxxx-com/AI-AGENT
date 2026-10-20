@@ -47,9 +47,24 @@ D:\Python\Python3.14\python.exe configurator.py
 | 记忆召回 | 每轮 `meta` 里显示召回条数、token 预算，底部实时更新 |
 | 待读主动消息 | 启动即拉 `/proactive/pending`，以琥珀色气泡呈现 |
 | 历史回填 | 按会话 ID 拉 `/chat/history`，重启不丢上下文 |
+| **记忆面板** | `Ctrl+M` 打开右侧抽屉：笔记增删查 / 洞察 / 状态，见下节 |
 | 记忆检索 | `Ctrl+F` 打开，直接调 `/memory/search`，能看到 `both / vector / keyword` 命中路径 |
 | 危机标记 | 命中安全话术时，气泡上方显示「已触发安全话术」 |
 | 离线引导 | 后端没起时给出可复制的启动命令，而不是只报错 |
+
+### 记忆面板（验证 APP 功能用）
+
+小程序只有 chat 和 notes 两页，桌面端这个抽屉把它们补齐，还多给了两样——洞察和状态。
+在没有真机的情况下，这是验证后端行为最直接的入口。
+
+| Tab | 数据来源 | 能做什么 |
+| --- | -------- | -------- |
+| 笔记 | `GET/POST/DELETE /notes` | 新建（标题+正文）、筛选、双击看全文、删除；每条标注「已向量化 / 待向量化」 |
+| 洞察 | `GET /insights` | 只看：类型、置信度、依据几条笔记；被取代的置灰并标出被谁取代 |
+| 状态 | `GET /me` | 只看：心情、能量、连续未回应、冷却至、今日主动/上限、订阅额度、下次心跳 |
+
+「待向量化」这个标记有实际意义：`JOBS_ENABLED=false`（WASM 模式）时队列不跑，
+新建笔记只进分词索引、不生成向量，检索会走关键词路。补向量用 `pnpm backfill:embeddings`。
 
 ## 快捷键
 
@@ -58,6 +73,7 @@ D:\Python\Python3.14\python.exe configurator.py
 | `Enter` | 发送 |
 | `Shift+Enter` | 换行 |
 | `Ctrl+K` | 打开配置器（改 key / 模型） |
+| `Ctrl+M` | 记忆面板（笔记 / 洞察 / 状态） |
 | `Ctrl+,` | 设置（服务地址 / openid / 会话） |
 | `Ctrl+F` | 记忆检索 |
 | `Ctrl+R` | 拉取待读消息 |
@@ -72,6 +88,7 @@ apps/desktop/
 ├── companion/
 │   ├── api.py              ApiClient：登录 / SSE / 待读 / 历史 / 检索
 │   ├── window.py           主窗口、设置对话框、记忆检索对话框
+│   ├── panel.py            记忆抽屉：笔记 / 洞察 / 状态
 │   ├── widgets.py          气泡、输入框、状态点、滚动容器
 │   ├── envfile.py          .env 读写（保留注释与顺序）
 │   ├── probe.py            DeepSeek / embedding 连通性探测
@@ -120,7 +137,8 @@ D:\Python\Python3.14\python.exe tools\preview.py ..\..\var
 D:\Python\Python3.14\python.exe tools\config_smoke.py --shot ..\..\var\preview-config.png
 ```
 
-`api_smoke.py` 覆盖：健康检查 → 登录 → 待读接口 → `meta`（含召回条数）→ 流式 token 计数 → 完成。
+`api_smoke.py` 覆盖：健康检查 → 登录 → 待读 → 笔记列表 → 洞察 → 我的状态 →
+流式对话（token 计数）→ 新建笔记 → 删除笔记。
 `config_smoke.py` 覆盖：改值生效 / 新键追加 / 注释保留 / 其他键不受影响 / 带空格值自动加引号 / 两个接口探测 + 维度比对。
 
 ## 已知限制

@@ -30,8 +30,12 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
       consecutive_ignored: number;
       cooldown_until: Date | null;
       daily_proactive_count: number;
+      last_user_message_at: Date | null;
+      last_proactive_at: Date | null;
+      next_heartbeat_at: Date | null;
     }>(
-      `select current_mood, energy, consecutive_ignored, cooldown_until, daily_proactive_count
+      `select current_mood, energy, consecutive_ignored, cooldown_until, daily_proactive_count,
+              last_user_message_at, last_proactive_at, next_heartbeat_at
        from companion_state where user_id = $1`,
       [userId],
     );
