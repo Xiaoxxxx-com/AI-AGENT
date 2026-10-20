@@ -10,8 +10,8 @@
 import 'dotenv/config';
 import { readFile } from 'node:fs/promises';
 import { createPool } from '../apps/backend/src/db/client.js';
-import { createEmbedderFromEnv, toSqlVector } from '../apps/backend/src/memory/embed.js';
-import { hybridSearch } from '../apps/backend/src/memory/hybrid-search.js';
+import { createEmbedderFromEnv } from '../apps/backend/src/memory/embed.js';
+import { hybridSearchDebug, vectorOnlySearch } from '../apps/backend/src/memory/hybrid-search.js';
 import { env } from '../apps/backend/src/config.js';
 
 interface EvalCase {
@@ -25,22 +25,6 @@ const topK = Number(args.find((a) => a.startsWith('--topK='))?.split('=')[1] ?? 
 const casesPath = args.find((a) => a.startsWith('--cases='))?.split('=')[1] ?? 'ops/eval/retrieval-cases.json';
 
 const THRESHOLD = { recall: 0.8, mrr: 0.65, keywordShare: 0.15 };
-
-async function vectorOnly(
-  pool: ReturnType<typeof createPool>,
-  userId: number,
-  queryVec: number[],
-  k: number,
-): Promise<number[]> {
-  const { rows } = await pool.query<{ id: string }>(
-    `select id from notes
-     where user_id = $1 and embedding is not null
-     order by embedding <=> $2::vector
-     limit $3`,
-    [userId, toSqlVector(queryVec), k],
-  );
-  return rows.map((r) => Number(r.id));
-}
 
 async function main(): Promise<void> {
   const raw = await readFile(casesPath, 'utf8');
@@ -68,13 +52,15 @@ async function main(): Promise<void> {
 
     let hybridRecall = 0;
     let vectorRecall = 0;
+    let keywordRecall = 0;
     let hybridMrr = 0;
     let vectorMrr = 0;
     let keywordOnlyHits = 0;
     let totalHits = 0;
     let skipped = 0;
+    const pathStats = { tsquery: 0, trigram: 0, none: 0 };
 
-    console.log('\nquery'.padEnd(28), 'hybrid'.padEnd(24), 'vector-only');
+    console.log('\nquery'.padEnd(28), 'hybrid'.padEnd(24), 'vector-only', 'kw路径');
     for (const c of cases) {
       const relevantIds = c.relevant
         .map((t) => idByTitle.get(t))
@@ -86,20 +72,24 @@ async function main(): Promise<void> {
       }
 
       const [qvec] = await embedder.embed([c.query]);
-      const hybrid = await hybridSearch(pool, {
+      const debug = await hybridSearchDebug(pool, {
         userId,
         query: c.query,
         queryVec: qvec ?? null,
         topK,
       });
-      const vec = await vectorOnly(pool, userId, qvec ?? [], topK);
+      const hybrid = debug.hits;
+      const vec = await vectorOnlySearch(pool, userId, qvec ?? [], topK);
+      pathStats[debug.keywordPath] += 1;
 
       const hIds = hybrid.map((h) => h.id);
       const hHit = relevantIds.filter((id) => hIds.includes(id));
       const vHit = relevantIds.filter((id) => vec.includes(id));
+      const kHit = relevantIds.filter((id) => debug.keywordIds.includes(id));
 
       hybridRecall += hHit.length / relevantIds.length;
       vectorRecall += vHit.length / relevantIds.length;
+      keywordRecall += kHit.length / relevantIds.length;
 
       const hRank = hIds.findIndex((id) => relevantIds.includes(id));
       const vRank = vec.findIndex((id) => relevantIds.includes(id));
@@ -115,6 +105,7 @@ async function main(): Promise<void> {
         c.query.padEnd(28),
         fmt(hHit.length, relevantIds.length, hRank),
         fmt(vHit.length, relevantIds.length, vRank),
+        debug.keywordPath,
       );
     }
 
@@ -124,6 +115,7 @@ async function main(): Promise<void> {
     const metrics = {
       'Recall@10 (hybrid)': hybridRecall / n,
       'Recall@10 (vector-only)': vectorRecall / n,
+      'Recall@10 (keyword-only)': keywordRecall / n,
       'MRR (hybrid)': hybridMrr / n,
       'MRR (vector-only)': vectorMrr / n,
       '关键词路独有命中占比': totalHits > 0 ? keywordOnlyHits / totalHits : 0,
@@ -153,9 +145,22 @@ async function main(): Promise<void> {
         '\n⚠️  hybrid 不如纯向量：先查 notes.content_tsvector 是否为空（中文分词没写进 content_tokens）。',
       );
     }
-    if (metrics['关键词路独有命中占比'] < THRESHOLD.keywordShare) {
-      console.log('\n⚠️  关键词路独有命中偏低：分词停用词表可能过激，或语料太少。');
+    console.log(
+      `\n关键词路取数方式：tsquery ${pathStats.tsquery} 次 / trigram 兜底 ${pathStats.trigram} 次 / 无命中 ${pathStats.none} 次`,
+    );
+    if (noteRes.rows.length <= 40) {
+      console.log(
+        `⚠️  语料只有 ${noteRes.rows.length} 条，小于 candidateLimit=40：两路候选会完全重合，` +
+          `「关键词独有命中」必然接近 0。跑 pnpm corpus:distractors 扩充语料后再评。`,
+      );
     }
+    if (metrics['关键词路独有命中占比'] < THRESHOLD.keywordShare && noteRes.rows.length > 40) {
+      console.log('\n⚠️  关键词路独有命中偏低：分词停用词表可能过激，或语料领域过于单一。');
+    }
+    console.log(
+      '\n提示：「关键词路独有命中」与 embedder 强相关。用词面向量（本地 mock）时两路高度重合，该指标天然接近 0；' +
+        '\n     换成语义模型（bge-m3 / bge-large-zh）后才有区分度。判断关键词路是否健康，看 Recall@10 (keyword-only)。',
+    );
   } finally {
     await pool.end();
   }

@@ -4,6 +4,7 @@ import { segment, tokenize, toTsQuery } from '../apps/backend/src/memory/segment
 import { backoffHours, dedupeKey, hardGate } from '../apps/backend/src/companion/proactive';
 import { isQuietHours, localDate } from '../apps/backend/src/lib/time';
 import { detectCrisis } from '../apps/backend/src/chat/safety';
+import { fuseRrf } from '../apps/backend/src/memory/hybrid-search';
 
 let pass = 0;
 const check = (name: string, fn: () => void) => {
@@ -119,6 +120,27 @@ check('日常夸张不误判', () => {
 });
 check('普通低落不误判', () => {
   assert.equal(detectCrisis('最近有点撑不住，压力很大').level, 'none');
+});
+
+console.log('rrf');
+check('两路命中分数叠加', () => {
+  const fused = fuseRrf([1, 2], [2, 3]);
+  const byId = new Map(fused.map((f) => [f.id, f]));
+  assert.ok(Math.abs((byId.get(2)?.score ?? 0) - (1 / 62 + 1 / 61)) < 1e-9);
+  assert.equal(byId.get(2)?.fromKeyword, true);
+  assert.equal(byId.get(3)?.fromVector, false);
+});
+check('结果降序且稳定', () => {
+  const a = fuseRrf([10, 20, 30], [30, 20, 10]).map((f) => f.id);
+  const b = fuseRrf([10, 20, 30], [30, 20, 10]).map((f) => f.id);
+  assert.deepEqual(a, b);
+  assert.equal(a[0], 30);
+});
+check('两路为空返回空', () => {
+  assert.deepEqual(fuseRrf([], []), []);
+});
+check('单路退化', () => {
+  assert.deepEqual(fuseRrf([7, 8], []).map((f) => f.id), [7, 8]);
 });
 
 console.log(`\n${pass} 项通过${process.exitCode ? '，存在失败' : ''}`);

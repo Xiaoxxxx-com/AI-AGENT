@@ -17,6 +17,8 @@ const InsightItem = z.object({
   confidence: z.number().default(0.5),
   noteIds: z.array(z.number().int()).default([]),
   quote: z.string().max(300).default(''),
+  /** 这条新理解取代了哪些**已存在**的洞察 id（冲突下线） */
+  supersedes: z.array(z.number().int()).default([]),
 });
 
 const ReflectionResult = z.object({
@@ -34,12 +36,43 @@ const SYSTEM = `你在做一次克制的自我整理：把对方最近的记录�
 4. noteIds 只能从给定笔记里选，至少一条；找不到依据就不要输出这条。
 5. confidence 0–1：多条证据互相印证才给 0.8 以上。
 6. 最多 5 条。宁可少，不要凑数。
-7. 输出 JSON：{"insights":[{"type":"pattern","content":"...","confidence":0.8,"noteIds":[12],"quote":"原文片段"}]}`;
+7. 如果给了"已有洞察"，只有当新证据**推翻或明显改写**了某条旧洞察时，才在 supersedes 里填它的 id。
+   仅仅是补充细节、或只是措辞不同，不要填 supersedes。
+8. 输出 JSON：
+{"insights":[{"type":"pattern","content":"...","confidence":0.8,"noteIds":[12],"quote":"原文片段","supersedes":[]}]}`;
 
 export interface ReflectResult {
   created: number;
   skipped: number;
+  superseded: number;
   reason?: string;
+}
+
+/**
+ * 冲突下线：新洞察生效，旧洞察 is_active=false 并留下溯源。
+ * 单独抽出来，便于脚本与集成测试直接验证（不依赖 LLM）。
+ */
+export async function applySupersede(
+  pool: Pool,
+  userId: number,
+  newInsightId: number,
+  supersededIds: number[],
+  reason: string,
+): Promise<number> {
+  if (supersededIds.length === 0) return 0;
+  const { rowCount } = await pool.query(
+    `update user_insights
+     set is_active = false,
+         superseded_by = $3,
+         superseded_reason = $4,
+         updated_at = now()
+     where user_id = $1
+       and id = any($2::bigint[])
+       and is_active = true
+       and id <> $3`,
+    [userId, supersededIds, newInsightId, reason],
+  );
+  return rowCount ?? 0;
 }
 
 function parseVector(value: unknown): number[] | null {
@@ -62,7 +95,7 @@ export async function reflectUser(
      limit 50`,
     [userId],
   );
-  if (notesRes.rows.length === 0) return { created: 0, skipped: 0, reason: 'no-notes' };
+  if (notesRes.rows.length === 0) return { created: 0, skipped: 0, superseded: 0, reason: 'no-notes' };
 
   const convRes = await pool.query<{ role: string; content: string }>(
     `select role, content from conversations
@@ -85,6 +118,18 @@ export async function reflectUser(
     .map((r) => `${r.role === 'assistant' ? '她' : '对方'}：${r.content.slice(0, 200)}`)
     .join('\n');
 
+  // 已有洞察要在调用前取出：既用于提示词里让模型判断冲突，也用于去重
+  const existing = await pool.query<{ id: string; content: string; embedding: unknown }>(
+    `select id, content, embedding from user_insights
+     where user_id = $1 and is_active = true and superseded_by is null`,
+    [userId],
+  );
+  const activeIds = new Set(existing.rows.map((r) => Number(r.id)));
+  const existingBlock =
+    existing.rows.length > 0
+      ? existing.rows.map((r) => `#${r.id} ${r.content}`).join('\n')
+      : '（暂无）';
+
   const result = await chatJson(
     [
       { role: 'system', content: SYSTEM },
@@ -94,6 +139,7 @@ export async function reflectUser(
           summaryRes.rows[0] ? `已有对话摘要：${summaryRes.rows[0].summary}` : '',
           `最近的笔记（仅这些 id 可用）：\n${notesBlock}`,
           convBlock ? `最近的对话：\n${convBlock}` : '',
+          `已有洞察（supersedes 只能用这些 id）：\n${existingBlock}`,
         ]
           .filter(Boolean)
           .join('\n\n'),
@@ -103,10 +149,6 @@ export async function reflectUser(
     { maxTokens: 1200, temperature: 0.3 },
   );
 
-  const existing = await pool.query<{ id: string; content: string; embedding: unknown }>(
-    `select id, content, embedding from user_insights where user_id = $1 and is_active = true`,
-    [userId],
-  );
   const existingTexts = new Set(existing.rows.map((r) => r.content.trim()));
   const existingVecs = existing.rows
     .map((r) => parseVector(r.embedding))
@@ -117,10 +159,14 @@ export async function reflectUser(
       ...item,
       confidence: Math.min(1, Math.max(0, item.confidence)),
       noteIds: item.noteIds.filter((id) => validNoteIds.has(id)),
+      // 只允许引用该用户真实存在、且仍然有效的旧洞察
+      supersedes: item.supersedes.filter((id) => activeIds.has(id)),
     }))
     .filter((item) => item.noteIds.length > 0 && !existingTexts.has(item.content.trim()));
 
-  if (candidates.length === 0) return { created: 0, skipped: result.insights.length, reason: 'no-valid' };
+  if (candidates.length === 0) {
+    return { created: 0, skipped: result.insights.length, superseded: 0, reason: 'no-valid' };
+  }
 
   let vectors: (number[] | null)[] = candidates.map(() => null);
   if (embedder) {
@@ -133,6 +179,7 @@ export async function reflectUser(
 
   let created = 0;
   let skipped = 0;
+  let superseded = 0;
 
   for (let i = 0; i < candidates.length; i += 1) {
     const item = candidates[i];
@@ -148,10 +195,11 @@ export async function reflectUser(
 
     const evidence = item.noteIds.map((noteId) => ({ noteId, quote: item.quote }));
 
-    await pool.query(
+    const inserted = await pool.query<{ id: string }>(
       `insert into user_insights
          (user_id, insight_type, content, confidence, source_note_ids, evidence, embedding, last_validated_at)
-       values ($1, $2, $3, $4, $5::bigint[], $6::jsonb, $7::vector, now())`,
+       values ($1, $2, $3, $4, $5::bigint[], $6::jsonb, $7::vector, now())
+       returning id`,
       [
         userId,
         item.type,
@@ -162,10 +210,24 @@ export async function reflectUser(
         vec ? toSqlVector(vec) : null,
       ],
     );
+    const newId = Number(inserted.rows[0]?.id ?? 0);
     created += 1;
+
+    if (newId && item.supersedes.length > 0) {
+      superseded += await applySupersede(
+        pool,
+        userId,
+        newId,
+        item.supersedes,
+        `被 #${newId} 的更新理解取代`,
+      );
+      // 旧洞察下线后不再参与后续去重比对
+      for (const id of item.supersedes) activeIds.delete(id);
+    }
+
     if (vec) existingVecs.push(vec);
     existingTexts.add(item.content.trim());
   }
 
-  return { created, skipped };
+  return { created, skipped, superseded };
 }

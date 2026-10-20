@@ -44,6 +44,8 @@ const Env = z.object({
 
   JOB_CONCURRENCY: z.coerce.number().int().positive().default(4),
   HEARTBEAT_INTERVAL_MINUTES: z.coerce.number().int().positive().default(30),
+  /** false = 只跑 HTTP 层，队列降级为 no-op（本地验收 / 无 pg-boss 环境用） */
+  JOBS_ENABLED: booleanish.default(true),
 
   COMFYUI_URL: z.string().url().default('http://127.0.0.1:8188'),
   COMFYUI_ENABLED: booleanish.default(false),

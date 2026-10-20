@@ -97,13 +97,16 @@ export async function registerWorkers(deps: WorkerDeps): Promise<void> {
 
   // ---- 每小时：标记 6 小时未回应的主动消息，按退避设冷却 ----
   await boss.work(QUEUE.staleSweep, async () => {
-    const userIds = await markStaleProactive(pool);
-    for (const userId of userIds) {
+    const swept = await markStaleProactive(pool);
+    for (const { userId, count } of swept) {
       const state = await getState(pool, userId);
       if (!state) continue;
       const hours = backoffHours(state.consecutiveIgnored);
       if (hours > 0) await setCooldown(pool, userId, hours);
-      log.info({ userId, ignored: state.consecutiveIgnored, cooldownHours: hours }, '[jobs] 未回应，进入冷却');
+      log.info(
+        { userId, unansweredInSweep: count, ignored: state.consecutiveIgnored, cooldownHours: hours },
+        '[jobs] 未回应，进入冷却',
+      );
     }
   });
 

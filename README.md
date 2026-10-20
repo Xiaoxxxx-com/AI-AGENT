@@ -30,6 +30,9 @@
 | 本地 mock LLM（免 Key 跑全链路） | `scripts/mock-openai-server.ts` | ✅ |
 | 检索评测（Recall@10 / MRR / 关键词独有占比） | `scripts/eval-retrieval.ts` | ✅ |
 | 便携版 PostgreSQL 控制脚本 | `scripts/pg.ts` | ✅ 免管理员 |
+| WASM 版 PostgreSQL（无 Docker 也能验收） | `scripts/pglite-server.ts` | ✅ `pnpm pg:wasm` |
+| A/B/C 验收断言（索引 / 洞察 / 证据 / 去重 / 冷却） | `scripts/check-*.ts`, `scripts/load-sse.ts` | ✅ 见 `docs/ACCEPTANCE.md` |
+| 洞察冲突下线（superseded_by） | `src/companion/reflection.ts` + 迁移 0003 | ✅ |
 
 ## 2. 目录
 
@@ -90,6 +93,19 @@ pnpm db:migrate && pnpm db:seed
 pnpm db:migrate     # 空库直接跑；已有 users/notes 表的话改用 ops/legacy/alter_existing.sql
 ```
 
+### 路线 D：什么都装不了时（WASM）
+
+真 PostgreSQL 起不来的环境（无 Docker、WSL 被禁、`initdb` 被拦）可以用 PGlite 跑完整验收：
+
+```powershell
+pnpm pg:wasm        # PostgreSQL 18.6(WASM) + pgvector 0.8.7，监听 127.0.0.1:5433
+$env:DATABASE_URL="postgres://companion:companion_dev@127.0.0.1:5433/companion"
+pnpm db:migrate && pnpm db:seed
+```
+
+限制：单进程串行、不支持 pg-boss（起服务时加 `JOBS_ENABLED=false`）、
+规划器不实现 GIN/HNSW 扫描（`check:indexes` 的 2 条计划断言会跳过）。详见 `docs/ACCEPTANCE.md`。
+
 ### 起服务：有 Key 用真模型，没 Key 用 mock
 
 ```powershell
@@ -126,6 +142,7 @@ curl "http://127.0.0.1:3000/memory/search?q=最近工作压力大&topK=5" `
 | `JWT_SECRET` | ≥32 字符，启动时校验，不满足直接退出 |
 | `COMFYUI_ENABLED` | 默认 `false`；关闭时文本链路零影响 |
 | `HEARTBEAT_INTERVAL_MINUTES` | 每用户心跳间隔，默认 30 分钟 |
+| `JOBS_ENABLED` | 默认 `true`。`false` 时队列降级为 no-op，只跑 HTTP 层（WASM 验收 / 只读调试用） |
 
 > 注：方案原文用 `z.coerce.boolean()` 解析 `COMFYUI_ENABLED`，它会把字符串 `"false"` 判成 `true`。
 > 这里换成了显式白名单解析（`src/config.ts`）。
@@ -181,18 +198,36 @@ pnpm eval:retrieval  # 检索评测（需 DB + seed + embedding）
 
 - `smoke:llm` 跑的是项目自己的封装（`createEmbedder` / `chatStream` / `chatJson` / `shouldReachOut`），
   用 mock 校验「协议层」是否正确；换成真 Key 后同一条命令即是真实连通性测试。
-- `eval:retrieval` 输出 hybrid 与纯向量的 Recall@10、MRR、关键词路独有命中占比，
-  低于阈值会直接提示「先查 `content_tsvector` 是否为空」。
-- 集成测试（Testcontainers + pgvector）尚未接入：Windows 无 Docker 的机器上会让 `pnpm install` 变慢。
-  接了 Docker 之后按方案 §8.1 补：起容器 → 迁移 → 种子 → 断言。
+- `eval:retrieval` 输出 hybrid / 纯向量 / 纯关键词三路 Recall@10、MRR，以及关键词路取数方式，
+  低于阈值会直接提示排查方向。
 
-## 8. 还没做的（按阶段）
+### A / B / C 阶段的验收断言
 
-- **阶段 A 收尾**：`EXPLAIN` 走索引的自动断言（现在靠 eval + 手工 `EXPLAIN`）。
-- **阶段 B 收尾**：洞察冲突下线（现在只做新增 + 向量去重，不做「旧洞察被推翻」）。
-- **阶段 C 收尾**：压测（50 并发 SSE）、`dedupe_key` 重试 10 次只发 1 条的自动化验证。
+| 阶段 | 命令 | 断言内容 |
+| ---- | ---- | -------- |
+| A | `pnpm check:indexes` | 扩展、HNSW 参数、GIN/HNSW 是否被用上、`content_tsvector` 覆盖率 |
+| A | `pnpm eval:retrieval` | Recall@10 / MRR / 关键词路独有占比 |
+| B | `pnpm check:insights` | 洞察冲突下线、幂等、越权保护、组装层过滤 |
+| B | `pnpm check:evidence` | 证据链完整性、摘要区间、机械引用 |
+| C | `pnpm check:dedupe` | 同一 key 并发 10 次只落 1 条 |
+| C | `pnpm check:cooldown` | 3 次未回应 → 72h 冷却 → 回话解除 |
+| C | `pnpm load:sse --concurrency=50` | 并发 SSE、首字节延迟、中断后半截落库 |
+
+执行结果与已知限制见 **[`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)**（含一次真实发现的 bug 修复记录）。
+
+集成测试（Testcontainers + pgvector）仍未接入：Windows 无 Docker 的机器上会让 `pnpm install` 变慢。
+
+## 8. 阶段状态
+
+- **阶段 A 检索闭环**：已收尾。索引断言、评测脚本、`pg_trgm` 并联兜底就绪。
+  指标目标（Recall@10 ≥ 0.80 / MRR ≥ 0.65）**需接真实 bge-m3 后复评**——本机只有词面 mock 向量，
+  测出的 0.611 / 0.600 不代表链路质量，详见 `docs/ACCEPTANCE.md` §3。
+- **阶段 B 反思与洞察**：已收尾。冲突下线（`superseded_by` + 迁移 0003）、证据链审计、机械引用审计就绪。
+- **阶段 C 心跳与克制**：已收尾。dedupe 并发、退避冷却、50 并发 SSE、客户端中断均已自动化验证；
+  期间修掉一个真实 bug（未回应计数按轮 +1 导致退避永远停在 6h）。
 - **阶段 D**：ComfyUI 真实工作流 JSON（现在是占位 + 轮询 `/history`，没接 WS）。
-- **阶段 E**：Caddy/HTTPS 上线、备份恢复演练、隐私政策与 AI 生成内容标识。危机话术已内置（`chat/safety.ts`），但仍需人工review 话术与热线号码的地域适配。
+- **阶段 E**：Caddy/HTTPS 上线、备份恢复演练、隐私政策与 AI 生成内容标识。
+  危机话术已内置（`chat/safety.ts`），但热线号码与措辞仍需按地域人工确认。
 
 ## 9. 几个容易踩的坑
 
@@ -205,3 +240,7 @@ pnpm eval:retrieval  # 检索评测（需 DB + seed + embedding）
    自建/代理的 embedding 服务如果不遵守这个参数、仍返回 float 数组，客户端会把 1024 个数按字节重解释成 **256 维**。
    自己写兼容层时务必处理（本项目 mock 就是这么修的）。
 7. **便携版 PG 不进 git**：`var/` 已在 `.gitignore` 里，换机器需要重新下载（见 §3 路线 A）。
+8. **语料小于 candidateLimit(40) 时评测会失真**：向量路会把全部笔记捞回来，
+   「关键词独有命中」必然为 0。先 `pnpm corpus:distractors` 扩到 300+ 再评。
+9. **`ts_rank_cd` 大量并列**：中文短查询常出现同分（都是 0.1），
+   必须用 `similarity()` 做二次排序，否则 id 顺序会变成任意噪声并污染 RRF 融合。

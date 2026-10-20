@@ -22,6 +22,13 @@
       "when": 1792469200180,
       "tag": "0002_vector_index",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792476824919,
+      "tag": "0003_insight_supersede",
+      "breakpoints": true
     }
   ]
 }

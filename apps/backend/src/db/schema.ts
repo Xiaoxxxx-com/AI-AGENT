@@ -150,6 +150,11 @@ export const userInsights = pgTable(
     evidence: jsonb('evidence').notNull().default(sql`'[]'::jsonb`),
     embedding: vector('embedding', { dimensions: EMBEDDING_DIM }),
     isActive: boolean('is_active').notNull().default(true),
+    /** 被哪条新洞察取代（冲突下线用）；为 null 表示仍然有效 */
+    supersededBy: bigint('superseded_by', { mode: 'number' }).references(
+      (): AnyPgColumn => userInsights.id,
+    ),
+    supersededReason: text('superseded_reason'),
     lastValidatedAt: timestamp('last_validated_at', { withTimezone: true }),
     createdAt,
     updatedAt,

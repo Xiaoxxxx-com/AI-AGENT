@@ -140,37 +140,48 @@ export async function setCooldown(pool: Pool, userId: number, hours: number): Pr
 }
 
 /**
- * 投递后 6 小时仍未回应的，标记 user_replied = false 并累加 consecutive_ignored。
+ * 投递后 6 小时仍未回应的，标记 user_replied = false，并按**条数**累加 consecutive_ignored。
  * 这个判断必须由数据库任务维护，不能交给 LLM。
+ *
+ * 注意：早期版本按「每用户每轮 +1」累加，会导致 3 条未回应只记 1 次，
+ * 退避永远停在 6h。这里改成按条数累加。
  */
-export async function markStaleProactive(pool: Pool): Promise<number[]> {
-  const { rows } = await pool.query<{ user_id: string }>(
+export async function markStaleProactive(
+  pool: Pool,
+): Promise<{ userId: number; count: number }[]> {
+  const { rows } = await pool.query<{ user_id: string; n: number }>(
     `with stale as (
        select id, user_id from proactive_log
        where status in ('sent') and user_replied is null
          and created_at < now() - interval '6 hours'
        for update skip locked
+     ),
+     marked as (
+       update proactive_log p
+       set user_replied = false
+       from stale s
+       where p.id = s.id
+       returning p.user_id
      )
-     update proactive_log p
-     set user_replied = false
-     from stale s
-     where p.id = s.id
-     returning p.user_id`,
+     select user_id, count(*)::int as n from marked group by user_id`,
     [],
   );
 
-  const userIds = [...new Set(rows.map((r) => Number(r.user_id)))];
-  for (const userId of userIds) {
+  const result: { userId: number; count: number }[] = [];
+  for (const row of rows) {
+    const userId = Number(row.user_id);
+    const count = Number(row.n);
     await pool.query(
       `update companion_state
-       set consecutive_ignored = consecutive_ignored + 1,
+       set consecutive_ignored = consecutive_ignored + $2,
            updated_at = now(),
            version = version + 1
        where user_id = $1`,
-      [userId],
+      [userId, count],
     );
+    result.push({ userId, count });
   }
-  return userIds;
+  return result;
 }
 
 /**
