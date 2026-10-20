@@ -8,3 +8,8 @@ coverage/
 .DS_Store
 apps/backend/drizzle/meta/_journal.json.bak
 apps/miniprogram/node_modules/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

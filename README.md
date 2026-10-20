@@ -35,6 +35,7 @@
 | A/B/C 验收断言（索引 / 洞察 / 证据 / 去重 / 冷却） | `scripts/check-*.ts`, `scripts/load-sse.ts` | ✅ 见 `docs/ACCEPTANCE.md` |
 | 洞察冲突下线（superseded_by） | `src/companion/reflection.ts` + 迁移 0003 | ✅ |
 | Android 开发环境（JDK 17 + SDK 36 + adb，免管理员） | `docs/ANDROID-SETUP.md`, `ops/android-env.*` | ✅ |
+| 桌面端（Python 3.12 + PySide6 6.9，流式对话/待读/检索） | `apps/desktop/` | ✅ |
 
 ## 2. 目录
 
