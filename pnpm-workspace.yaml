@@ -1,0 +1,6 @@
+packages:
+  - "apps/*"
+
+# pnpm 默认拦截依赖的 build script；esbuild（tsx / vitest 的底层）需要它来放置平台二进制。
+allowBuilds:
+  esbuild: true

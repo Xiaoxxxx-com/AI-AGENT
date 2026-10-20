@@ -1,0 +1,46 @@
+<view class="container">
+  <scroll-view
+    id="scroll"
+    class="messages"
+    scroll-y
+    scroll-into-view="{{scrollIntoView}}"
+    scroll-with-animation
+  >
+    <view wx:if="{{!messages.length}}" class="empty">说点什么吧，她记得住。</view>
+
+    <block wx:for="{{messages}}" wx:key="index">
+      <view class="row {{item.role === 'user' ? 'right' : 'left'}}">
+        <view class="bubble {{item.role}}">
+          <text wx:if="{{item.text}}">{{item.text}}</text>
+          <text wx:else class="typing">…</text>
+        </view>
+      </view>
+    </block>
+
+    <view id="bottom-anchor" class="anchor"></view>
+  </scroll-view>
+
+  <view wx:if="{{pendingProactive}}" class="proactive" bindtap="loadPending">
+    <text class="proactive-label">她给你留了一句话</text>
+    <text class="proactive-text">{{pendingProactive.message}}</text>
+  </view>
+
+  <view class="toolbar">
+    <text class="link" bindtap="goNotes">记忆</text>
+    <text class="link" bindtap="onSubscribe">{{subscribed ? '已开启主动关心' : '允许她偶尔想起你'}}</text>
+  </view>
+
+  <view class="composer">
+    <input
+      class="input"
+      value="{{input}}"
+      placeholder="说点什么…"
+      placeholder-class="placeholder"
+      confirm-type="send"
+      bindinput="onInput"
+      bindconfirm="onSend"
+      disabled="{{sending}}"
+    />
+    <view class="send {{sending ? 'disabled' : ''}}" bindtap="onSend">发送</view>
+  </view>
+</view>

@@ -1,0 +1,34 @@
+{
+  "name": "companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI companion cognitive substrate: PostgreSQL memory + Fastify SSE + pg-boss lifecycle",
+  "engines": {
+    "node": ">=20.20.2"
+  },
+  "scripts": {
+    "dev": "tsx watch apps/backend/src/server.ts",
+    "build": "tsc -p apps/backend/tsconfig.json",
+    "start": "node apps/backend/dist/server.js",
+    "typecheck": "tsc -p apps/backend/tsconfig.json --noEmit",
+    "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
+    "db:migrate": "drizzle-kit migrate --config=drizzle.config.ts",
+    "db:studio": "drizzle-kit studio --config=drizzle.config.ts",
+    "db:seed": "tsx apps/backend/src/db/seed.ts",
+    "backfill:embeddings": "tsx scripts/backfill-embeddings.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "selftest": "tsx scripts/selftest.ts",
+    "lint": "eslint apps/backend/src"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "dotenv": "^16.4.7",
+    "drizzle-kit": "^0.31.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

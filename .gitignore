@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+var/
+coverage/
+.DS_Store
+apps/backend/drizzle/meta/_journal.json.bak
+apps/miniprogram/node_modules/

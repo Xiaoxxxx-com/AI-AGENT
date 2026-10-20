@@ -1,0 +1,62 @@
+# 生产：db + backend + caddy（SSE 已关缓冲）。启动前先跑迁移，不要靠应用启动自动建表。
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: companion-db
+    environment:
+      POSTGRES_USER: companion
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-companion_dev}
+      POSTGRES_DB: companion
+      TZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ops/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U companion -d companion"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=32MB
+      -c maintenance_work_mem=1GB
+      -c max_connections=50
+      -c log_min_duration_statement=200
+
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    container_name: companion-api
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://companion:${POSTGRES_PASSWORD:-companion_dev}@db:5432/companion
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "3000"
+    volumes:
+      - ./var:/app/var
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    container_name: companion-caddy
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

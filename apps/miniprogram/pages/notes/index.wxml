@@ -1,0 +1,45 @@
+<view class="container">
+  <view class="section">
+    <input class="input" value="{{title}}" placeholder="标题（可空）" bindinput="onTitle" />
+    <textarea
+      class="textarea"
+      value="{{content}}"
+      placeholder="今天发生了什么，想到什么…"
+      maxlength="20000"
+      bindinput="onContent"
+    />
+    <view class="button {{loading ? 'disabled' : ''}}" bindtap="onSave">记下来</view>
+  </view>
+
+  <view class="section">
+    <view class="search-row">
+      <input class="input flex" value="{{keyword}}" placeholder="试着搜一下，比如「最近压力大」" bindinput="onKeyword" />
+      <view class="button small" bindtap="onSearch">检索</view>
+    </view>
+
+    <view wx:if="{{results}}" class="meta">
+      融合 {{results.items.length}} 条 · {{results.meta.costMs}}ms ·
+      {{results.meta.vectorUsed ? '向量+关键词' : '仅关键词'}}
+    </view>
+
+    <block wx:for="{{results.items}}" wx:key="id">
+      <view class="hit">
+        <view class="hit-head">
+          <text class="hit-title">{{item.title || '无标题'}}</text>
+          <text class="tag {{item.source}}">{{item.source}}</text>
+        </view>
+        <text class="hit-text">{{item.content}}</text>
+      </view>
+    </block>
+  </view>
+
+  <view class="section">
+    <view class="section-title">最近的记忆</view>
+    <block wx:for="{{notes}}" wx:key="id">
+      <view class="note">
+        <text class="note-title">{{item.title || '无标题'}}</text>
+        <text class="note-text">{{item.content}}</text>
+      </view>
+    </block>
+  </view>
+</view>

@@ -1,0 +1,32 @@
+# 开发环境：只起数据库。应用用 `pnpm dev` 跑在宿主机上，热重载更快。
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: companion-db
+    environment:
+      POSTGRES_USER: companion
+      POSTGRES_PASSWORD: companion_dev
+      POSTGRES_DB: companion
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ops/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U companion -d companion"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=32MB
+      -c maintenance_work_mem=512MB
+      -c max_connections=50
+      -c log_min_duration_statement=200
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+
+volumes:
+  pgdata:

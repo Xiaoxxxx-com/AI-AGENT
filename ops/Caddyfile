@@ -1,0 +1,7 @@
+api.example.com {
+    encode zstd gzip
+    reverse_proxy backend:3000 {
+        # SSE 必须关缓冲，否则会退化成“一次性返回”
+        flush_interval -1
+    }
+}
