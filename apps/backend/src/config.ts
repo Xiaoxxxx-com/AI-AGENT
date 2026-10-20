@@ -42,6 +42,11 @@ const Env = z.object({
   WECHAT_TEMPLATE_PROACTIVE: z.string().default(''),
   PUBLIC_BASE_URL: z.string().default(''),
 
+  /** 主动触达直推通道：自用场景用它把消息推到手机通知栏（详见 companion/push.ts） */
+  PUSH_KIND: z.enum(['off', 'bark', 'serverchan', 'wecom', 'telegram', 'generic']).default('off'),
+  PUSH_URL: z.string().default(''),
+  PUSH_TARGET: z.string().default(''),
+
   JOB_CONCURRENCY: z.coerce.number().int().positive().default(4),
   HEARTBEAT_INTERVAL_MINUTES: z.coerce.number().int().positive().default(30),
   /** false = 只跑 HTTP 层，队列降级为 no-op（本地验收 / 无 pg-boss 环境用） */
@@ -72,6 +77,7 @@ export const env = {
   isTest: raw.NODE_ENV === 'test',
   corsOrigins: raw.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean),
   wechatEnabled: Boolean(raw.WECHAT_APPID && raw.WECHAT_SECRET),
+  pushEnabled: raw.PUSH_KIND !== 'off' && Boolean(raw.PUSH_URL),
 };
 
 export type Env = typeof env;

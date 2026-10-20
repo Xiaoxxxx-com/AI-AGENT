@@ -21,6 +21,7 @@
 | 每日反思 → 可追溯洞察 | `src/companion/reflection.ts` | ✅ |
 | 心跳「tick + 每用户任务」+ 硬规则闸门 | `src/companion/heartbeat.ts`, `proactive.ts`, `state.ts` | ✅ |
 | 投递（订阅消息 + 站内 pending + 配额记账） | `src/companion/delivery.ts` | ✅ |
+| 主动触达直推（bark / serverchan / 企业微信 / telegram） | `src/companion/push.ts` | ✅ 自用推荐 |
 | SSE 流式对话（abort、半截落库） | `src/chat/stream.ts` | ✅ |
 | 危机内容识别 + 固定安全指令 | `src/chat/safety.ts` | ✅ |
 | ComfyUI 可降级 + 图片静态服务 | `src/vision/comfyui.ts`, `src/server.ts` | ✅ 默认关闭 |
@@ -146,6 +147,39 @@ curl "http://127.0.0.1:3000/memory/search?q=最近工作压力大&topK=5" `
 
 > 注：方案原文用 `z.coerce.boolean()` 解析 `COMFYUI_ENABLED`，它会把字符串 `"false"` 判成 `true`。
 > 这里换成了显式白名单解析（`src/config.ts`）。
+
+### 4.1 让 AI 主动找你（自用关键配置）
+
+平台限制摆在这：小程序**一次性订阅**一次授权只能发一条，**长期订阅**只对政务/医疗/交通/金融/教育等类目开放，
+AI 陪伴类拿不到。所以“她主动找到你”不能只靠订阅消息。
+
+解法是服务端把消息推到手机通知栏，点开再进小程序读正文、回话。
+投递优先级写死在 `companion/delivery.ts`：**直推 → 订阅消息 → 站内待读**，前一步失败自动降级。
+
+```ini
+# 四选一，都只需要一个 URL（telegram 额外要 chat_id）
+PUSH_KIND=bark
+PUSH_URL=https://api.day.app/你的KEY
+
+# PUSH_KIND=serverchan  PUSH_URL=https://sctapi.ftqq.com/SCTxxxx.send
+# PUSH_KIND=wecom       PUSH_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+# PUSH_KIND=telegram    PUSH_URL=https://api.telegram.org/bot<token>/sendMessage
+#                       PUSH_TARGET=<chat_id>
+# PUSH_KIND=generic     PUSH_URL=你自己的 webhook（POST {title, body, link}）
+```
+
+冒烟：
+
+```powershell
+pnpm push:test --kind=bark --url=https://api.day.app/你的KEY
+# 端到端（写一条 proactive_log → 投递 → 断言 channel=push:bark）
+pnpm push:test --kind=bark --url=... --e2e
+```
+
+要点：
+- 自用把 `HEARTBEAT_INTERVAL_MINUTES` 调到 10，主动消息才够“活”；默认 30 分钟。
+- `PUBLIC_BASE_URL` 没有网页端就留空，否则会推出去一个死链。
+- 推送失败不会重试轰炸，直接降级站内；`proactive_log.channel` 会记成 `push:bark` / `in_app` 便于排查。
 
 ## 5. API
 

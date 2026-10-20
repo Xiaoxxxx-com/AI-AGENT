@@ -104,6 +104,19 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, dim: DIM, service: 'mock-openai' });
   }
 
+  // 推送通道的本地回声端点：验证 push.ts 的请求体是否合规（kind=generic 时用）
+  if (req.method === 'POST' && url === '/push') {
+    const raw = await readBody(req);
+    let body: unknown = null;
+    try {
+      body = JSON.parse(raw || '{}');
+    } catch {
+      return json(res, 400, { ok: false, error: 'bad-json' });
+    }
+    console.log('[mock-push]', JSON.stringify(body));
+    return json(res, 200, { ok: true, received: body });
+  }
+
   if (req.method !== 'POST') return json(res, 404, { error: 'not-found' });
   const raw = await readBody(req);
   let body: Record<string, unknown> = {};

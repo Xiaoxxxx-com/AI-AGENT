@@ -200,6 +200,35 @@ PGlite 能**创建** GIN / HNSW 索引（`pg_am` 里也能看到 `gin`/`hnsw`）
 
 ---
 
+## 6.4 主动触达直推（自用场景补充）
+
+小程序订阅消息「一次授权一条」是硬限制，自用要“她主动找我”必须另开通道。
+新增 `companion/push.ts`：直推 → 订阅消息 → 站内，逐级降级。
+
+用本地回声端点验证请求体与降级逻辑（真实通道只需换 URL）：
+
+```text
+$ pnpm push:test --kind=generic --url=http://127.0.0.1:4010/push --e2e
+  ok    推送请求成功 · generic
+  ok    端到端投递走直推通道 · channel=push:generic
+
+$ pnpm push:test --kind=generic --url=http://127.0.0.1:4999/push --e2e --expect-degrade
+  ok    推送失败被正确识别 · fetch failed
+  ok    推送失败降级到站内 · channel=in_app
+```
+
+mock 端收到的请求体：
+
+```json
+{"title":"她给你留了一句话","body":"（端到端测试）今天在楼下看到一只很像豆豆的猫。","link":"https://api.example.com"}
+```
+
+两个断言点：
+1. 成功时 `proactive_log.channel = push:generic`、`status = sent`；
+2. 推送失败时**不丢消息**，降级成 `in_app`，用户进小程序仍能读到全文。
+
+---
+
 ## 7. 复现整套验收
 
 ```powershell

@@ -32,6 +32,7 @@
     "db:bootstrap": "pnpm pg:setup && pnpm db:migrate && pnpm db:seed",
     "mock:llm": "tsx scripts/mock-openai-server.ts",
     "smoke:llm": "tsx scripts/smoke-llm.ts",
+    "push:test": "tsx scripts/test-push.ts",
     "eval:retrieval": "tsx scripts/eval-retrieval.ts",
     "corpus:distractors": "tsx scripts/gen-distractors.ts",
     "backfill:embeddings": "tsx scripts/backfill-embeddings.ts",

@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { Pool } from '../db/client.js';
 import { env } from '../config.js';
 import { sendSubscribeMessage } from '../auth/wechat.js';
+import { pushEnabled, pushMessage } from './push.js';
 import { formatCst } from '../lib/time.js';
 
 /**
@@ -45,6 +46,32 @@ export async function deliverProactive(deps: DeliveryDeps, proactiveId: number):
     // 幂等：重复投递直接跳过，避免心跳重试重复发送
     log.debug({ proactiveId, status: row.status }, '[deliver] 已处理，跳过');
     return;
+  }
+
+  // 投递优先级：直推（通知栏） → 订阅消息（微信服务通知） → 站内待读。
+  // 自用场景下直推是唯一不受「一次授权一条」限制的通道，所以放最前。
+  if (pushEnabled()) {
+    const pushed = await pushMessage(
+      {
+        title: '她给你留了一句话',
+        body: row.message,
+        ...(env.PUBLIC_BASE_URL ? { link: env.PUBLIC_BASE_URL } : {}),
+      },
+      { log },
+    );
+
+    if (pushed.ok) {
+      await pool.query(
+        `update proactive_log
+         set status = 'sent', channel = $2, delivered_at = now()
+         where id = $1 and status = 'queued'`,
+        [proactiveId, `push:${pushed.kind}`],
+      );
+      log.info({ proactiveId, channel: pushed.kind }, '[deliver] 已推送到通知栏');
+      return;
+    }
+
+    log.warn({ proactiveId, error: pushed.error }, '[deliver] 直推失败，降级订阅消息/站内');
   }
 
   const canSubscribe =

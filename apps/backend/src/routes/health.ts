@@ -34,6 +34,8 @@ export async function registerHealthRoutes(app: FastifyInstance): Promise<void> 
     }
 
     checks.vision = { enabled: app.config.COMFYUI_ENABLED, healthy: await comfyuiHealthy() };
+    // 主动触达是否配好直推通道；自用场景没有它就只能靠订阅消息额度
+    checks.push = { kind: app.config.PUSH_KIND, configured: app.config.pushEnabled };
 
     return reply.code(ok ? 200 : 503).send({
       ok,
