@@ -10,12 +10,15 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
+    QScrollArea,
     QSizePolicy,
+    QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
 
 from . import theme
+from .backdrop import Backdrop, BackdropLayer, is_image_file
 
 BUBBLE_MAX_RATIO = 0.74
 BUBBLE_MIN_WIDTH = 220
@@ -41,6 +44,9 @@ class Bubble(QFrame):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(14, 10, 14, 8)
         outer.setSpacing(4)
+        if role == "system":
+            # 系统提示在浅色主题下是一条半透明白色小条，内边距收紧一点
+            outer.setContentsMargins(12, 5, 12, 5)
 
         self.label = QLabel(text)
         self.label.setWordWrap(True)
@@ -58,7 +64,7 @@ class Bubble(QFrame):
 
         if role == "proactive":
             self.meta.setText("她主动留下的")
-            self.meta.setStyleSheet("color: #b9a77e; font-size: 11px;")
+            self.meta.setStyleSheet(f"color: {theme.WARN}; font-size: 11px;")
 
     # -- 内容
     @property
@@ -98,18 +104,31 @@ class Bubble(QFrame):
 
 
 class ChatView(QWidget):
-    """可滚动的对话区，负责自动贴底与气泡宽度。"""
+    """可滚动的对话区，负责自动贴底与气泡宽度。
+
+    背景层铺在最底下，滚动区整层透明叠上去。这样滚动时背景是固定的，
+    不会像给容器设 background-image 那样跟着内容一起滚（长对话里会看到图片被拉走）。
+    """
+
+    backdropDropped = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        from PySide6.QtWidgets import QScrollArea
+        self.backdrop = BackdropLayer(self)
 
         self.scroll = QScrollArea(self)
+        self.scroll.setObjectName("ChatScroll")
         self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 透明必须设在 viewport 上：QScrollArea 的底色其实由 viewport 画，
+        # 只改外层样式，滚动时仍会刷出一块不透明底色盖住背景
+        self.scroll.viewport().setObjectName("ChatViewport")
+        self.scroll.viewport().setAutoFillBackground(False)
 
         self.container = QWidget()
         self.container.setObjectName("ChatContainer")
+        self.container.setAutoFillBackground(False)
         self.lines = QVBoxLayout(self.container)
         self.lines.setContentsMargins(22, 18, 22, 18)
         self.lines.setSpacing(10)
@@ -117,11 +136,47 @@ class ChatView(QWidget):
 
         self.scroll.setWidget(self.container)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(self.scroll)
+        stack = QStackedLayout(self)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+        stack.addWidget(self.backdrop)  # 先加的在下层
+        stack.addWidget(self.scroll)
+        # StackAll 会把 currentWidget 抬到最上层，不指定的话背景会把整个对话区盖住
+        stack.setCurrentWidget(self.scroll)
 
         self._bubbles: list[Bubble] = []
+        self.setAcceptDrops(True)
+
+    # -- 背景
+    def set_backdrop(self, state: Backdrop) -> str:
+        return self.backdrop.set_state(state)
+
+    @staticmethod
+    def _dropped_image(mime) -> str:  # type: ignore[no-untyped-def]
+        if not mime.hasUrls():
+            return ""
+        for url in mime.urls():
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                if is_image_file(path):
+                    return path
+        return ""
+
+    def dragEnterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self._dropped_image(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self._dropped_image(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        path = self._dropped_image(event.mimeData())
+        if path:
+            event.acceptProposedAction()
+            self.backdropDropped.emit(path)
 
     # -- 添加
     def add(self, role: str, text: str = "") -> Bubble:

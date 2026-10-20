@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QElapsedTimer, QSettings, Qt, QTimer
+from pathlib import Path
+
+from PySide6.QtCore import QElapsedTimer, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -15,24 +17,46 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from . import theme
 from .api import ApiClient, new_session_id
+from .backend import BackendController
+from .backdrop import Backdrop, BackdropEditor
 from .panel import MemoryPanel
 from .widgets import ChatView, Composer, StatusDot
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, base_url: str, openid: str, session_id: str, parent: QWidget | None = None):
+    """连接参数 + 背景，两页放在同一个设置对话框里。
+
+    背景改动实时预览，保存才落盘；取消会把主窗口恢复到打开设置前的状态。
+    """
+
+    backdropChanged = Signal(object)  # Backdrop
+
+    def __init__(
+        self,
+        base_url: str,
+        openid: str,
+        session_id: str,
+        background: Backdrop,
+        initial_tab: str = "连接",
+        backend: BackendController | None = None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("设置")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(620)
+        self.backdrop = background.copy()
+        self.backend = backend
 
         self.base_url = QLineEdit(base_url)
         self.openid = QLineEdit(openid)
@@ -60,6 +84,52 @@ class SettingsDialog(QDialog):
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
 
+        backend_title = QLabel("本地后端")
+        self.backend_status = QLabel("")
+        self.backend_status.setObjectName("Muted")
+        self.backend_status.setWordWrap(True)
+        self.backend_btn = QPushButton("启动")
+        self.backend_btn.setObjectName("Primary")
+        self.backend_btn.setFixedWidth(92)
+        self.backend_btn.clicked.connect(self._toggle_backend)
+
+        backend_row = QHBoxLayout()
+        backend_row.setSpacing(10)
+        backend_row.addWidget(backend_title)
+        backend_row.addWidget(self.backend_status, 1)
+        backend_row.addWidget(self.backend_btn)
+
+        backend_hint = QLabel(
+            "启动 PGlite（5433）和 API（3000）；关闭本程序时会自动结束这两个进程。"
+            "向量化还需要 Ollama 在运行。"
+        )
+        backend_hint.setObjectName("Muted")
+        backend_hint.setWordWrap(True)
+
+        connection = QWidget()
+        connection_layout = QVBoxLayout(connection)
+        connection_layout.setContentsMargins(16, 18, 16, 8)
+        connection_layout.setSpacing(14)
+        connection_layout.addLayout(form)
+        connection_layout.addWidget(hint)
+        connection_layout.addSpacing(4)
+        connection_layout.addLayout(backend_row)
+        connection_layout.addWidget(backend_hint)
+        connection_layout.addStretch(1)
+
+        if self.backend is not None:
+            self.backend.stateChanged.connect(self._render_backend)
+            self.backend.probe()
+        self._render_backend()
+
+        self.editor = BackdropEditor(self.backdrop)
+        self.editor.changed.connect(self._on_backdrop)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(connection, "连接")
+        self.tabs.addTab(self.editor, "背景")
+        self.tabs.setCurrentIndex(1 if initial_tab == "背景" else 0)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
@@ -69,11 +139,45 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 18)
-        layout.setSpacing(14)
-        layout.addLayout(form)
-        layout.addWidget(hint)
+        layout.setContentsMargins(16, 12, 16, 14)
+        layout.setSpacing(10)
+        layout.addWidget(self.tabs, 1)
         layout.addWidget(buttons)
+
+    def _on_backdrop(self, state: Backdrop) -> None:
+        self.backdrop = state.copy()
+        self.backdropChanged.emit(self.backdrop.copy())
+
+    def _toggle_backend(self) -> None:
+        if self.backend is None:
+            return
+        if self.backend.state in ("starting", "running"):
+            self.backend.stop()
+            return
+        error = self.backend.start()
+        if error:
+            QMessageBox.warning(self, "无法启动后端", error)
+        self._render_backend()
+
+    def _render_backend(self, state: str = "", detail: str = "") -> None:
+        if self.backend is None:
+            self.backend_status.setText("未接入")
+            self.backend_btn.setEnabled(False)
+            return
+        state = state or self.backend.state
+        detail = detail or self.backend.detail
+        label = {
+            "stopped": "未启动",
+            "starting": "启动中…",
+            "running": "已启动",
+            "external": "已在运行",
+            "error": "启动失败",
+        }.get(state, state)
+        self.backend_status.setText(f"{label}　{detail}".strip())
+        self.backend_btn.setText(
+            {"starting": "启动中…", "running": "停止", "external": "已运行"}.get(state, "启动")
+        )
+        self.backend_btn.setEnabled(state not in ("starting", "external"))
 
 
 class MemoryDialog(QDialog):
@@ -159,6 +263,9 @@ class MainWindow(QMainWindow):
         self.openid = str(self.settings.value("openid", "seed-openid-001"))
         self.session_id = str(self.settings.value("session_id", "") or new_session_id())
         self.settings.setValue("session_id", self.session_id)
+        self.background = Backdrop.from_settings(self.settings)
+        # 后端由设置页按需启动；关窗时只结束这里启动的进程
+        self.backend = BackendController(self)
 
         self.client = ApiClient(self.base_url, self)
         self.busy = False
@@ -174,6 +281,8 @@ class MainWindow(QMainWindow):
         self._restore_geometry()
         self._build_ui()
         self._wire()
+        # 背景要在 UI 建好之后套用；这一步不写回设置，避免每次启动都重存一遍
+        self.apply_background(self.background, save=False)
 
         if autostart:
             QTimer.singleShot(120, self.boot)
@@ -218,7 +327,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         settings_action = QAction("设置…", self)
         settings_action.setShortcut("Ctrl+,")
-        settings_action.triggered.connect(self.open_settings)
+        settings_action.triggered.connect(lambda: self.open_settings())
         file_menu.addAction(settings_action)
         quit_action = QAction("退出", self)
         quit_action.setShortcut("Ctrl+Q")
@@ -238,6 +347,11 @@ class MainWindow(QMainWindow):
         pending_action.setShortcut("Ctrl+R")
         pending_action.triggered.connect(self.refresh_pending)
         tools.addAction(pending_action)
+        tools.addSeparator()
+        background_action = QAction("更换背景…", self)
+        background_action.setShortcut("Ctrl+B")
+        background_action.triggered.connect(self.open_background)
+        tools.addAction(background_action)
         clear_action = QAction("清空当前会话（仅界面）", self)
         clear_action.triggered.connect(self.chat.clear)
         tools.addAction(clear_action)
@@ -272,15 +386,20 @@ class MainWindow(QMainWindow):
         self.panel_btn.setObjectName("Ghost")
         self.panel_btn.setToolTip("笔记 / 洞察 / 状态")
         self.panel_btn.clicked.connect(self.toggle_panel)
+        background_btn = QPushButton("背景")
+        background_btn.setObjectName("Ghost")
+        background_btn.setToolTip("在设置里更换聊天区背景（Ctrl+B，也可以把图片拖进聊天区）")
+        background_btn.clicked.connect(self.open_background)
         settings_btn = QPushButton("设置")
         settings_btn.setObjectName("Ghost")
-        settings_btn.clicked.connect(self.open_settings)
+        settings_btn.clicked.connect(lambda: self.open_settings())
 
         right = QHBoxLayout()
         right.setContentsMargins(0, 0, 14, 0)
         right.setSpacing(6)
         right.addWidget(self.pending_btn)
         right.addWidget(self.panel_btn)
+        right.addWidget(background_btn)
         right.addWidget(settings_btn)
 
         row = QHBoxLayout(header)
@@ -388,6 +507,8 @@ class MainWindow(QMainWindow):
         c.pendingReceived.connect(self._on_pending)
         c.historyReceived.connect(self._on_history)
         c.requestFailed.connect(self._on_request_failed)
+        self.chat.backdropDropped.connect(self.apply_background_path)
+        self.backend.ready.connect(self.boot)
 
     def boot(self) -> None:
         self.dot.set_state("connecting")
@@ -536,9 +657,15 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- 设置
 
-    def open_settings(self) -> None:
-        dialog = SettingsDialog(self.base_url, self.openid, self.session_id, self)
+    def open_settings(self, tab: str = "连接") -> None:
+        original = self.background.copy()
+        dialog = SettingsDialog(
+            self.base_url, self.openid, self.session_id, self.background, tab, self.backend, self
+        )
+        # 背景改动实时看得到，但不落盘；取消就恢复到打开设置前的样子
+        dialog.backdropChanged.connect(lambda state: self.apply_background(state, save=False))
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.apply_background(original, save=False)
             return
         old_base = self.base_url
         self.base_url = dialog.base_url.text().strip() or old_base
@@ -550,6 +677,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("base_url", self.base_url)
         self.settings.setValue("openid", self.openid)
         self.settings.setValue("session_id", self.session_id)
+        self.apply_background(dialog.backdrop, save=True)
 
         if session_changed:
             self.chat.clear()
@@ -583,6 +711,30 @@ class MainWindow(QMainWindow):
             return
         subprocess.Popen([sys.executable, str(script)], cwd=str(script.parent))
 
+    # ---------------------------------------------------------------- 背景
+
+    def open_background(self) -> None:
+        """背景已经收进设置页，这里直接打开「背景」标签。"""
+        self.open_settings("背景")
+
+    def apply_background_path(self, path: str) -> None:
+        """拖进来的图片直接换背景，保留当前的填充方式与遮罩强度。"""
+        state = self.background.copy()
+        state.path = path
+        self.apply_background(state)
+        if not self.chat.backdrop.error:
+            self.statusBar().showMessage(f"背景已换成 {Path(path).name}", 4000)
+
+    def apply_background(self, state: Backdrop, save: bool = True) -> None:
+        self.background = state.copy()
+        error = self.chat.set_backdrop(self.background)
+        if error:
+            # 读不出来的路径不落盘，否则每次启动都会带着一条无效配置
+            self.statusBar().showMessage(f"{error}，已回退为纯色背景", 8000)
+            return
+        if save:
+            self.background.save(self.settings)
+
     # ---------------------------------------------------------------- 杂项
 
     def _restore_geometry(self) -> None:
@@ -594,4 +746,5 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         if self.stream_bubble is not None:
             self.client.abort_stream()
+        self.backend.stop()
         super().closeEvent(event)

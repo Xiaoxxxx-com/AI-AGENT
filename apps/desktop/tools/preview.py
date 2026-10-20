@@ -17,8 +17,10 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from companion import theme  # noqa: E402
+from companion.backend import BackendController  # noqa: E402
+from companion.backdrop import Backdrop, scan_gallery  # noqa: E402
 from companion.fonts import apply_app_font  # noqa: E402
-from companion.window import MainWindow  # noqa: E402
+from companion.window import MainWindow, SettingsDialog  # noqa: E402
 
 
 def shot(window: MainWindow, path: Path) -> None:
@@ -41,6 +43,8 @@ def main() -> None:
 
     window = MainWindow(autostart=False)
     window.resize(880, 700)
+    # 预览图要稳定：不跟着用户在设置里存的背景走
+    window.apply_background(Backdrop(), save=False)
     window.subtitle.setText("在线 · userId=1")
     window.dot.set_state("online")
     window.status_label.setText("http://127.0.0.1:3000 · userId=1 · session=8f3c1d2a")
@@ -73,11 +77,80 @@ def main() -> None:
     window.show()
     shot(window, out_dir / "preview-chat.png")
     panel_shot(out_dir)
+    background_shot(out_dir)
 
     window.chat.clear()
     window._on_offline("Connection refused（后端进程没起）")
     window.show()
     shot(window, out_dir / "preview-offline.png")
+
+
+def background_shot(out_dir: Path) -> None:
+    """背景图 + 背景对话框。用 background/ 里的真实图片，不依赖后端。"""
+    app = QApplication.instance()
+    assert app is not None
+
+    window = MainWindow(autostart=False)
+    window.resize(880, 700)
+    # 预览图要稳定：不跟着用户在设置里存的背景走
+    window.apply_background(Backdrop(), save=False)
+    window.subtitle.setText("在线 · userId=1")
+    window.dot.set_state("online")
+    window.stack.setCurrentIndex(0)
+    window.chat.clear()
+    window.chat.add("system", "已连接 http://127.0.0.1:3000，会话 8f3c1d2a")
+    window.chat.add("proactive", "昨天你说项目上线前都在加班，今天还顺利吗？").stamp()
+    window.chat.add("user", "今天在公司被领导当众说了，有点没缓过来。").stamp()
+    reply = window.chat.add(
+        "assistant",
+        "被当众说，那种下不来台的感觉会留很久。\n"
+        "你之前提过这个项目已经连着加了两周班——如果本来就在硬撑，"
+        "再被这样说一句，很难不往心里去。\n今晚还打算接着做吗，还是先停一停？",
+    )
+    reply.set_meta("记忆 12 条 · 洞察 0 · 1124 tokens · 2.4s")
+    reply.stamp()
+
+    images = scan_gallery()
+    if not images:
+        print("skip preview-background.png（background/ 里没有图片）")
+        return
+    state = Backdrop(path=str(images[0]), fill="cover", dim=42)
+    window.apply_background(state, save=False)
+    window.show()
+    shot(window, out_dir / "preview-background.png")
+
+    dialog = SettingsDialog(
+        "http://127.0.0.1:3000",
+        "seed-openid-001",
+        "8f3c1d2a-0000-0000-0000-000000000000",
+        state,
+        "背景",
+        BackendController(),
+        window,
+    )
+    dialog.resize(660, 600)
+    dialog.show()
+    for _ in range(6):
+        app.processEvents()
+    dialog.grab().save(str(out_dir / "preview-settings-background.png"))
+    print(f"saved {out_dir / 'preview-settings-background.png'}")
+
+    connection = SettingsDialog(
+        "http://127.0.0.1:3000",
+        "seed-openid-001",
+        "8f3c1d2a-0000-0000-0000-000000000000",
+        Backdrop(),
+        "连接",
+        BackendController(),
+        window,
+    )
+    connection.resize(660, 470)
+    connection.show()
+    for _ in range(6):
+        app.processEvents()
+    connection.grab().save(str(out_dir / "preview-settings-backend.png"))
+    print(f"saved {out_dir / 'preview-settings-backend.png'}")
+
 
 
 def panel_shot(out_dir: Path) -> None:
@@ -89,6 +162,7 @@ def panel_shot(out_dir: Path) -> None:
 
     window = MainWindow(autostart=False)
     window.resize(1080, 720)
+    window.apply_background(Backdrop(), save=False)
     window.online = True
     window.dot.set_state("online")
     window.subtitle.setText("在线 · userId=1")
