@@ -35,10 +35,12 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     app = QApplication(sys.argv[:1])
+    theme.apply_palette(app)
     app.setStyleSheet(theme.QSS)
     apply_app_font(app, 10)
 
     window = MainWindow(autostart=False)
+    window.resize(880, 700)
     window.subtitle.setText("在线 · userId=1")
     window.dot.set_state("online")
     window.status_label.setText("http://127.0.0.1:3000 · userId=1 · session=8f3c1d2a")

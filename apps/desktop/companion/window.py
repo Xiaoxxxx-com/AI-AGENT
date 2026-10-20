@@ -198,6 +198,11 @@ class MainWindow(QMainWindow):
         # 菜单（快捷键）
         menu = self.menuBar()
         file_menu = menu.addMenu("文件")
+        config_action = QAction("配置密钥与模型…", self)
+        config_action.setShortcut("Ctrl+K")
+        config_action.triggered.connect(self.open_configurator)
+        file_menu.addAction(config_action)
+        file_menu.addSeparator()
         settings_action = QAction("设置…", self)
         settings_action.setShortcut("Ctrl+,")
         settings_action.triggered.connect(self.open_settings)
@@ -241,6 +246,7 @@ class MainWindow(QMainWindow):
         left.addWidget(self.dot)
         left.addWidget(title)
         left.addWidget(self.subtitle)
+        left.addStretch(1)
 
         self.pending_btn = QPushButton("待读 0")
         self.pending_btn.setObjectName("Ghost")
@@ -321,18 +327,22 @@ class MainWindow(QMainWindow):
         self.composer.submitted.connect(self.send)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("Primary")
-        self.send_btn.setFixedWidth(84)
-        self.send_btn.setFixedHeight(84)
+        self.send_btn.setFixedSize(76, 40)
         self.send_btn.clicked.connect(self.send)
 
         self.context_label = QLabel("Enter 发送 · Shift+Enter 换行")
         self.context_label.setObjectName("Muted")
 
+        btn_col = QVBoxLayout()
+        btn_col.setContentsMargins(0, 0, 0, 0)
+        btn_col.addStretch(1)
+        btn_col.addWidget(self.send_btn)
+
         row = QHBoxLayout()
         row.setContentsMargins(16, 10, 16, 6)
         row.setSpacing(10)
         row.addWidget(self.composer, 1)
-        row.addWidget(self.send_btn)
+        row.addLayout(btn_col)
 
         wrap = QVBoxLayout(footer)
         wrap.setContentsMargins(0, 0, 0, 0)
@@ -528,6 +538,18 @@ class MainWindow(QMainWindow):
             self._on_offline("尚未登录")
             return
         MemoryDialog(self.client, self).exec()
+
+    def open_configurator(self) -> None:
+        """独立进程打开配置器：它直接读写 .env，不依赖后端是否在跑。"""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        script = Path(__file__).resolve().parent.parent / "configurator.py"
+        if not script.exists():
+            self.chat.add("system", f"找不到配置器：{script}")
+            return
+        subprocess.Popen([sys.executable, str(script)], cwd=str(script.parent))
 
     # ---------------------------------------------------------------- 杂项
 

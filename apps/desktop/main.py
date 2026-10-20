@@ -20,6 +20,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("陪伴")
     app.setOrganizationName("companion")
+    theme.apply_palette(app)
     app.setStyleSheet(theme.QSS)
 
     family = apply_app_font(app, 10)

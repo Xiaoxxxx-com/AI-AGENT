@@ -14,6 +14,12 @@ DANGER = "#f28b82"
 
 FONT_FAMILY = '"Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif'
 
+# 箭头图标：QSS 一旦接管 QComboBox/QSpinBox 的绘制，原生子控件就不再画，
+# 必须自带图片。路径用绝对 posix 形式，避免依赖工作目录。
+_ASSETS = (__import__("pathlib").Path(__file__).resolve().parent.parent / "assets").as_posix()
+ARROW_DOWN = f"{_ASSETS}/arrow-down.png"
+ARROW_UP = f"{_ASSETS}/arrow-up.png"
+
 # 注意：`*` 里不写 font-family —— Qt 的 QSS 对多字体列表支持不一致，
 # 统一由 fonts.apply_app_font() 设置 QApplication 字体，控件自然继承。
 QSS = f"""
@@ -71,14 +77,61 @@ QPlainTextEdit#Composer {{
 }}
 QPlainTextEdit#Composer:focus {{ border-color: {ACCENT}; }}
 
-QLineEdit {{
+QLineEdit, QComboBox, QSpinBox {{
     background: {SURFACE_2};
     border: 1px solid {BORDER};
     border-radius: 8px;
     padding: 7px 10px;
     color: {TEXT};
+    min-height: 18px;
 }}
-QLineEdit:focus {{ border-color: {ACCENT}; }}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color: {ACCENT}; }}
+
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 20px;
+    border: none;
+    background: transparent;
+}}
+QComboBox QAbstractItemView {{
+    background: {SURFACE_2};
+    border: 1px solid {BORDER};
+    color: {TEXT};
+    selection-background-color: #2f4a80;
+    selection-color: {TEXT};
+    outline: none;
+    padding: 4px;
+}}
+
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 22px;
+    border: none;
+    background: transparent;
+}}
+QComboBox::down-arrow {{
+    image: url("{ARROW_DOWN}");
+    width: 10px;
+    height: 7px;
+    margin-right: 6px;
+}}
+
+QSpinBox::up-button, QSpinBox::down-button {{
+    width: 20px;
+    background: transparent;
+    border: none;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: #2b303c; border-radius: 4px; }}
+QSpinBox::up-arrow {{ image: url("{ARROW_UP}"); width: 10px; height: 7px; }}
+QSpinBox::down-arrow {{ image: url("{ARROW_DOWN}"); width: 10px; height: 7px; }}
+
+QSpinBox::up-button, QSpinBox::down-button {{
+    width: 18px;
+    background: transparent;
+    border: none;
+}}
 
 QListWidget {{
     background: {SURFACE};
@@ -115,3 +168,36 @@ QToolTip {{
     padding: 6px;
 }}
 """
+
+
+def apply_palette(app) -> None:
+    """深色 QPalette。
+
+    QSS 管不到的细节（QComboBox 的箭头、QSpinBox 的上下键、原生对话框）
+    由样式引擎按调色板绘制，所以必须连 palette 一起设成深色，
+    否则这些子控件会是浅色或深底黑箭头，看不见。
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    # Fusion 能稳定按调色板绘制箭头/滚动条；Windows 原生样式会忽略深色设置
+    app.setStyle("Fusion")
+
+    p = QPalette()
+    p.setColor(QPalette.ColorRole.Window, QColor(BG))
+    p.setColor(QPalette.ColorRole.WindowText, QColor(TEXT))
+    p.setColor(QPalette.ColorRole.Base, QColor(SURFACE_2))
+    p.setColor(QPalette.ColorRole.AlternateBase, QColor(SURFACE))
+    p.setColor(QPalette.ColorRole.Text, QColor(TEXT))
+    p.setColor(QPalette.ColorRole.Button, QColor(SURFACE_2))
+    p.setColor(QPalette.ColorRole.ButtonText, QColor(TEXT))
+    p.setColor(QPalette.ColorRole.BrightText, QColor("#ffffff"))
+    p.setColor(QPalette.ColorRole.Highlight, QColor(ACCENT_DIM))
+    p.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    p.setColor(QPalette.ColorRole.ToolTipBase, QColor(SURFACE_2))
+    p.setColor(QPalette.ColorRole.ToolTipText, QColor(TEXT))
+    p.setColor(QPalette.ColorRole.PlaceholderText, QColor("#6b7385"))
+    p.setColor(QPalette.ColorRole.Link, QColor(ACCENT))
+
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
+        p.setColor(QPalette.ColorGroup.Disabled, role, QColor("#5b6273"))
+    app.setPalette(p)
