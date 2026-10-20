@@ -52,6 +52,49 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
     };
   });
 
+  /**
+   * 数据导出（隐私合规：用户有权带走自己的全部数据）。
+   * 返回一个 JSON，包含笔记、对话、洞察、摘要、主动消息，不含 session_key 等凭证。
+   */
+  app.get('/account/export', { preHandler: app.authenticate }, async (req, reply) => {
+    const userId = req.user?.sub;
+    if (!userId) return reply.code(401).send({ error: 'unauthorized' });
+
+    const [u, notes, convs, insights, summaries, proactive] = await Promise.all([
+      app.pool.query(`select id, nickname, timezone, proactive_enabled, created_at from users where id = $1`, [userId]),
+      app.pool.query(`select id, title, content, created_at from notes where user_id = $1 order by id`, [userId]),
+      app.pool.query(
+        `select id, role, content, session_id, created_at from conversations where user_id = $1 order by id`,
+        [userId],
+      ),
+      app.pool.query(
+        `select id, insight_type, content, confidence, source_note_ids, created_at from user_insights where user_id = $1 order by id`,
+        [userId],
+      ),
+      app.pool.query(
+        `select id, session_id, summary, covers_from_id, covers_to_id, created_at from conversation_summaries where user_id = $1 order by id`,
+        [userId],
+      ),
+      app.pool.query(
+        `select id, trigger_type, message, status, channel, created_at from proactive_log where user_id = $1 order by id`,
+        [userId],
+      ),
+    ]);
+
+    if (!u.rows[0]) return reply.code(404).send({ error: 'not-found' });
+
+    reply.header('content-disposition', `attachment; filename="companion-export-${userId}.json"`);
+    return {
+      exportedAt: new Date().toISOString(),
+      user: u.rows[0],
+      notes: notes.rows,
+      conversations: convs.rows,
+      insights: insights.rows,
+      summaries: summaries.rows,
+      proactive: proactive.rows,
+    };
+  });
+
   /** 数据删除权：级联删除 notes/conversations/insights/state/proactive */
   app.delete('/account', { preHandler: app.authenticate }, async (req, reply) => {
     const userId = req.user?.sub;

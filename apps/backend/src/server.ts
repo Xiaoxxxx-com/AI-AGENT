@@ -3,6 +3,9 @@ import { fastifySSE } from '@fastify/sse';
 import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import fastifyStatic from '@fastify/static';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
 
 import { env } from './config.js';
 import { buildLoggerOptions } from './plugins/log.js';
@@ -45,6 +48,16 @@ async function main(): Promise<void> {
   await app.register(dbPlugin);
   await app.register(jobsPlugin);
   await app.register(authPlugin);
+
+  // ComfyUI 产出的图片走本地目录；目录不存在时也建出来，避免启动失败
+  const imageDir = path.resolve(env.STORAGE_DIR, 'images');
+  await mkdir(imageDir, { recursive: true });
+  await app.register(fastifyStatic, {
+    root: imageDir,
+    prefix: '/static/images/',
+    maxAge: '7d',
+    decorateReply: false,
+  });
 
   await registerHealthRoutes(app);
   await registerAuthRoutes(app);

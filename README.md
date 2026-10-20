@@ -22,9 +22,14 @@
 | 心跳「tick + 每用户任务」+ 硬规则闸门 | `src/companion/heartbeat.ts`, `proactive.ts`, `state.ts` | ✅ |
 | 投递（订阅消息 + 站内 pending + 配额记账） | `src/companion/delivery.ts` | ✅ |
 | SSE 流式对话（abort、半截落库） | `src/chat/stream.ts` | ✅ |
-| ComfyUI 可降级 | `src/vision/comfyui.ts` | ✅ 默认关闭 |
+| 危机内容识别 + 固定安全指令 | `src/chat/safety.ts` | ✅ |
+| ComfyUI 可降级 + 图片静态服务 | `src/vision/comfyui.ts`, `src/server.ts` | ✅ 默认关闭 |
+| 数据导出 / 删除（隐私合规） | `src/routes/account.ts` | ✅ |
 | 小程序（登录 / SSE 分块 / 主动消息 / 记忆页） | `apps/miniprogram/` | ✅ |
-| 单测（分词 / token / 状态机） | `apps/backend/tests/` | ✅（见 §7 说明） |
+| 单元测试（分词 / token / 状态机 / 危机识别） | `apps/backend/tests/` | ✅ |
+| 本地 mock LLM（免 Key 跑全链路） | `scripts/mock-openai-server.ts` | ✅ |
+| 检索评测（Recall@10 / MRR / 关键词独有占比） | `scripts/eval-retrieval.ts` | ✅ |
+| 便携版 PostgreSQL 控制脚本 | `scripts/pg.ts` | ✅ 免管理员 |
 
 ## 2. 目录
 
@@ -50,37 +55,57 @@ companion/
 └── drizzle.config.ts
 ```
 
-## 3. 快速开始
+## 3. 装环境（三条路，选一条）
+
+### 路线 A：便携版 PostgreSQL（推荐，无需 Docker / 无需管理员）
+
+便携版已下载并装好 pgvector 到 `var/pg/pgsql`（PostgreSQL 17.6 + vector 0.8.6）。只需初始化：
 
 ```powershell
-# 1) 依赖
 pnpm install
+copy .env.example .env        # 关键项：JWT_SECRET（≥32 字符）
+pnpm pg:setup                 # initdb → 启动 → 建库 → 建扩展（一条命令搞定）
+pnpm db:migrate               # 三条迁移：扩展 → 建表 → HNSW/GIN
+pnpm db:seed                  # 30 条中文笔记
+```
 
-# 2) 起数据库（Windows 需要 Docker Desktop + WSL2）
+其他常用命令：`pnpm pg:start` / `pnpm pg:stop` / `pnpm pg:status` / `pnpm pg:psql`。
+
+数据在 `var/pgdata`，日志在 `var/pg.log`，只监听 `127.0.0.1`。
+**不要用管理员身份运行**：PostgreSQL 拒绝以 Administrator 启动，`pg_ctl` 会直接报错退出。
+
+### 路线 B：Docker
+
+```powershell
 docker compose up -d
-docker compose ps
 docker exec -it companion-db psql -U companion -d companion -c "SELECT extname, extversion FROM pg_extension;"
-#   期望看到 vector 与 pg_trgm
+pnpm db:migrate && pnpm db:seed
+```
 
-# 3) 环境变量
-copy .env.example .env      # 至少填 DEEPSEEK_API_KEY；EMBEDDING_* 指向本地 Ollama 或任意 OpenAI 兼容服务
+### 路线 C：已有 PostgreSQL
 
-# 4) 迁移（三条，顺序固定：扩展必须在建表之前）
-pnpm db:migrate
+装好 `pgvector` 扩展、建库、把 `DATABASE_URL` 指过去，然后：
 
-# 5) 启动
+```powershell
+pnpm db:migrate     # 空库直接跑；已有 users/notes 表的话改用 ops/legacy/alter_existing.sql
+```
+
+### 起服务：有 Key 用真模型，没 Key 用 mock
+
+```powershell
+# 有 DeepSeek Key + 本地 Ollama（bge-m3）
 pnpm dev
-# 另开窗口：
-curl http://127.0.0.1:3000/healthz
+
+# 没有 Key 也能跑通全链路：一个窗口起 mock，另一个窗口起服务
+pnpm mock:llm
+pnpm dev:mock
 ```
 
 `/healthz` 会同时检查 **DB + pgvector + 队列**，返回 503 说明其中一项没起来。
 
-灌点中文种子数据，验证检索闭环：
-
 ```powershell
-pnpm db:seed
-pnpm backfill:embeddings          # 需要 embedding 服务在线；没有也能只跑关键词路
+pnpm backfill:embeddings          # 生成向量（mock 也行）
+pnpm eval:retrieval               # Recall@10 / MRR / 关键词路独有占比
 
 # 本地拿 token（非生产环境才有这个路由）
 curl -X POST http://127.0.0.1:3000/auth/dev -H "content-type: application/json" -d "{}"
@@ -124,6 +149,8 @@ curl "http://127.0.0.1:3000/memory/search?q=最近工作压力大&topK=5" `
 | POST | `/proactive/toggle` | 主动关怀总开关 |
 | GET | `/me` | 用户 + 状态 |
 | DELETE | `/account` | 删除账号（级联） |
+| GET | `/account/export` | 导出全部数据（笔记/对话/洞察/摘要/主动消息） |
+| GET | `/static/images/*` | ComfyUI 产出的图片 |
 
 ## 6. 十条修正点的落地位置
 
@@ -140,25 +167,32 @@ curl "http://127.0.0.1:3000/memory/search?q=最近工作压力大&topK=5" `
 | 9 | pg-boss v10 用法 | `plugins/jobs.ts`（先 createQueue）+ `workers.ts`（handler 收数组） |
 | 10 | CPU 任务别堵 SSE | 分词/向量化走队列 `note.index`，embedding 可换外部服务 |
 
-## 7. 测试
+## 7. 测试与验收
 
 ```powershell
-pnpm test          # vitest：分词、token 估算、退避表、硬规则闸门、跨午夜安静时段
-pnpm selftest      # 同一批断言的纯 node 版本，不依赖 vite/临时目录，CI 或受限环境可用
 pnpm typecheck     # tsc --noEmit（strict）
+pnpm test          # vitest：分词、token、退避表、硬规则闸门、危机识别
+pnpm selftest      # 同批断言的纯 node 版，不依赖 vite 临时目录（受限环境可用）
+
+pnpm mock:llm      # 窗口 1
+pnpm smoke:llm     # LLM 契约：embedding 维度、流式分块、JSON 模式、tool_calls
+pnpm eval:retrieval  # 检索评测（需 DB + seed + embedding）
 ```
 
-集成测试需要 Docker（Testcontainers 跑 `pgvector/pgvector:pg17`），当前未接入——
-`@testcontainers/postgresql` 已列入计划但未安装，避免无 Docker 环境下 `pnpm install` 变慢。
-接的时候按方案 §8.1：起容器 → 跑迁移 → 种子 → 断言。
+- `smoke:llm` 跑的是项目自己的封装（`createEmbedder` / `chatStream` / `chatJson` / `shouldReachOut`），
+  用 mock 校验「协议层」是否正确；换成真 Key 后同一条命令即是真实连通性测试。
+- `eval:retrieval` 输出 hybrid 与纯向量的 Recall@10、MRR、关键词路独有命中占比，
+  低于阈值会直接提示「先查 `content_tsvector` 是否为空」。
+- 集成测试（Testcontainers + pgvector）尚未接入：Windows 无 Docker 的机器上会让 `pnpm install` 变慢。
+  接了 Docker 之后按方案 §8.1 补：起容器 → 迁移 → 种子 → 断言。
 
 ## 8. 还没做的（按阶段）
 
-- **阶段 A 收尾**：检索评测集（30–50 条查询，Recall@10 ≥ 0.80）脚本；`EXPLAIN` 走索引的断言。
-- **阶段 B 收尾**：7 天摘要抽检脚本；洞察 `superseded_by` 的冲突判定（目前只做新增+去重，不做冲突下线）。
-- **阶段 C 收尾**：压测（50 并发 SSE）、`dedupe_key` 重试验证脚本。
+- **阶段 A 收尾**：`EXPLAIN` 走索引的自动断言（现在靠 eval + 手工 `EXPLAIN`）。
+- **阶段 B 收尾**：洞察冲突下线（现在只做新增 + 向量去重，不做「旧洞察被推翻」）。
+- **阶段 C 收尾**：压测（50 并发 SSE）、`dedupe_key` 重试 10 次只发 1 条的自动化验证。
 - **阶段 D**：ComfyUI 真实工作流 JSON（现在是占位 + 轮询 `/history`，没接 WS）。
-- **阶段 E**：Caddy/HTTPS、备份演练、隐私政策、AI 生成内容标识、危机干预话术表。
+- **阶段 E**：Caddy/HTTPS 上线、备份恢复演练、隐私政策与 AI 生成内容标识。危机话术已内置（`chat/safety.ts`），但仍需人工review 话术与热线号码的地域适配。
 
 ## 9. 几个容易踩的坑
 
@@ -166,4 +200,8 @@ pnpm typecheck     # tsc --noEmit（strict）
 2. **`content_tokens` 是生成列的输入**：改了 `notes.content` 必须同步刷新 tokens，否则关键词路静默失效。
 3. **SSE 被反代缓冲**：Caddy 用 `flush_interval -1`，Nginx 关 `proxy_buffering`，否则「流式」变一次性返回。
 4. **订阅消息**：一次授权通常只能发一条；发送失败（43101 等）不要重试轰炸，直接降级 `in_app`。
-5. **更新账号删除**：`DELETE /account` 依赖全表 `ON DELETE CASCADE`，新增表记得也加上。
+5. **账号删除**：`DELETE /account` 依赖全表 `ON DELETE CASCADE`，新增表记得也加上。
+6. **embedding 的 `encoding_format`**：OpenAI SDK 默认请求 `encoding_format: "base64"`。
+   自建/代理的 embedding 服务如果不遵守这个参数、仍返回 float 数组，客户端会把 1024 个数按字节重解释成 **256 维**。
+   自己写兼容层时务必处理（本项目 mock 就是这么修的）。
+7. **便携版 PG 不进 git**：`var/` 已在 `.gitignore` 里，换机器需要重新下载（见 §3 路线 A）。

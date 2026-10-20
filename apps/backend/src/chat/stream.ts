@@ -5,6 +5,7 @@ import { env } from '../config.js';
 import { assembleContext } from '../memory/assemble.js';
 import { chatStream } from './deepseek.js';
 import { onUserMessage, saveMessage } from './messages.js';
+import { CRISIS_DIRECTIVE, crisisLogFields, detectCrisis } from './safety.js';
 import { QUEUE } from '../queue.js';
 
 const chatInput = z.object({
@@ -75,6 +76,18 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
     const traceId = randomUUID();
 
     const ctx = await assembleContext(app.pool, app.embedder, uid, message);
+
+    // 危机内容不拦截对话，只把固定安全指令压到 system 最前面
+    const verdict = detectCrisis(message);
+    if (verdict.level === 'crisis') {
+      const sys = ctx.messages[0];
+      if (sys?.role === 'system') sys.content += CRISIS_DIRECTIVE;
+      req.log.warn(
+        { userId: uid, traceId, ...crisisLogFields(verdict) },
+        '[chat] 命中危机关键词，已注入安全指令',
+      );
+    }
+
     const userMsgId = await saveMessage(app.pool, {
       userId: uid,
       role: 'user',
@@ -116,6 +129,7 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
             sessionId,
             traceId,
             context: ctx.meta,
+            safety: verdict.level,
           },
         };
 

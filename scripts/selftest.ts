@@ -3,6 +3,7 @@ import { estimateTokens, truncateToTokens } from '../apps/backend/src/lib/tokens
 import { segment, tokenize, toTsQuery } from '../apps/backend/src/memory/segment';
 import { backoffHours, dedupeKey, hardGate } from '../apps/backend/src/companion/proactive';
 import { isQuietHours, localDate } from '../apps/backend/src/lib/time';
+import { detectCrisis } from '../apps/backend/src/chat/safety';
 
 let pass = 0;
 const check = (name: string, fn: () => void) => {
@@ -100,6 +101,24 @@ check('dedupe 同小时相同', () => {
 check('跨午夜安静时段', () => {
   assert.equal(isQuietHours(night, 'Asia/Shanghai', '23:00', '08:00'), true);
   assert.equal(isQuietHours(daytime, 'Asia/Shanghai', '23:00', '08:00'), false);
+});
+
+console.log('crisis');
+check('直接意图命中', () => {
+  assert.equal(detectCrisis('我想自杀').level, 'crisis');
+  assert.equal(detectCrisis('真的不想活了').level, 'crisis');
+});
+check('自伤方式命中', () => {
+  assert.equal(detectCrisis('昨晚又割腕了').level, 'crisis');
+  assert.equal(detectCrisis('想跳楼').level, 'crisis');
+});
+check('日常夸张不误判', () => {
+  for (const t of ['累死了', '笑死我了', '困死了', '今天气死了']) {
+    assert.equal(detectCrisis(t).level, 'none', t);
+  }
+});
+check('普通低落不误判', () => {
+  assert.equal(detectCrisis('最近有点撑不住，压力很大').level, 'none');
 });
 
 console.log(`\n${pass} 项通过${process.exitCode ? '，存在失败' : ''}`);
