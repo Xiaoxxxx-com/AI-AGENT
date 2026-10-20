@@ -158,7 +158,50 @@ curl "http://127.0.0.1:3000/memory/search?q=最近工作压力大&topK=5" `
 > 注：方案原文用 `z.coerce.boolean()` 解析 `COMFYUI_ENABLED`，它会把字符串 `"false"` 判成 `true`。
 > 这里换成了显式白名单解析（`src/config.ts`）。
 
-### 4.1 让 AI 主动找你（自用关键配置）
+### 4.1 切到真实模型
+
+`.env` 里三行就够：
+
+```ini
+DEEPSEEK_API_KEY=sk-你的key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-flash
+```
+
+验证（真打一次，不经过 mock）：
+
+```powershell
+pnpm smoke:llm --real
+# ok chatText / chatStream / chatJson / shouldReachOut
+```
+
+**关于 `deepseek-flash`：它是思考模型。** 回复前会先输出 `reasoning_content`，
+这段也**计入 `completion_tokens`**。所以：
+
+- 结构化调用（`chatJson` / `shouldReachOut`）的 `max_tokens` 至少留 **800**，
+  否则推理就把预算吃光，正文是空字符串、`finish_reason=length`——
+  看起来像"模型没返回"，其实是预算不够。代码里已用 `MIN_STRUCTURED_BUDGET` 兜住。
+- 计费时 reasoning token 按 completion 收费，长推理会更贵。
+- `deepseek-chat` 目前会被路由到 `deepseek-flash`（响应里 model 字段就是 flash），
+  但那是即将退役的旧名，别再用。
+
+**Embedding 是另一件事。** DeepSeek 不提供 embedding 接口，`EMBEDDING_*` 要单独配
+（Ollama 本地跑 bge-m3，或任意 OpenAI 兼容的向量服务）。没配时聊天照常，
+检索自动退化成纯关键词——`assemble.ts` 里有兜底，不会因此聊不了天。
+
+### 4.2 开发脚本怎么选
+
+| 命令 | 数据库 | 模型 | 用途 |
+| ---- | ------ | ---- | ---- |
+| `pnpm dev` | `.env` 里的（原生 PG） | `.env` 里的真实配置 | 正式开发 |
+| `pnpm dev:wasm` | PGlite 5433 | `.env` 里的真实配置 | 原生 PG 起不来时的开发 |
+| `pnpm dev:wasm:mock` | PGlite 5433 | 本地 mock | 没有 key 时跑通链路 |
+| `pnpm dev:mock` | `.env` 里的 | 本地 mock | 只把 LLM 换成 mock |
+
+`dev:wasm` 只覆盖数据库和队列，**不动模型配置**——这是 2026-10-20 改的，
+之前的版本会把 LLM 强制指到 mock，导致填了真 key 也切不过去。
+
+### 4.3 让 AI 主动找你（自用关键配置）
 
 平台限制摆在这：小程序**一次性订阅**一次授权只能发一条，**长期订阅**只对政务/医疗/交通/金融/教育等类目开放，
 AI 陪伴类拿不到。所以“她主动找到你”不能只靠订阅消息。

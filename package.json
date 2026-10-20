@@ -11,6 +11,7 @@
     "dev": "tsx watch apps/backend/src/server.ts",
     "dev:mock": "tsx watch scripts/dev-with-mock.ts",
     "dev:wasm": "tsx watch scripts/dev-wasm.ts",
+    "dev:wasm:mock": "tsx watch scripts/dev-wasm.ts --mock",
     "build": "tsc -p apps/backend/tsconfig.json",
     "start": "node apps/backend/dist/server.js",
     "typecheck": "tsc -p apps/backend/tsconfig.json --noEmit",

@@ -34,28 +34,76 @@ export async function chatText(messages: ChatMessage[], opts: ChatOptions = {}):
   return res.choices[0]?.message?.content?.trim() ?? '';
 }
 
+/**
+ * deepseek-flash 是思考模型：先写 reasoning_content，再写正文，
+ * 两者都计入 completion_tokens。预算给太少时正文会是空字符串、
+ * finish_reason=length —— 看起来像"模型没返回"，其实是预算被推理吃光了。
+ * 所以结构化调用至少要留 800 的余量。
+ */
+const MIN_STRUCTURED_BUDGET = 800;
+
+function budget(requested: number | undefined, fallback: number): number {
+  return Math.max(MIN_STRUCTURED_BUDGET, requested ?? fallback);
+}
+
+/** 从可能带 markdown 代码块的文本里抠出 JSON */
+function extractJson(text: string): unknown {
+  const trimmed = text.trim();
+  const candidates = [trimmed];
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  const braced = trimmed.match(/\{[\s\S]*\}/);
+  if (braced?.[0]) candidates.push(braced[0]);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 export async function chatJson<S extends z.ZodTypeAny>(
   messages: ChatMessage[],
   schema: S,
   opts: ChatOptions = {},
 ): Promise<z.infer<S>> {
+  // DeepSeek 的 json_object 模式要求提示词里出现 "json"，否则直接 400。
+  // 调用方的 prompt 不一定提这个词，这里补一句，避免整个反思任务挂掉。
+  const mentionsJson = messages.some(
+    (m) => typeof m.content === 'string' && /json/i.test(m.content),
+  );
+  const safeMessages: ChatMessage[] = mentionsJson
+    ? messages
+    : [
+        { role: 'system', content: '只输出一个 JSON 对象（json object），不要解释，不要 markdown 代码块。' },
+        ...messages,
+      ];
+
   const res = await deepseek.chat.completions.create(
     {
       model: env.DEEPSEEK_MODEL,
-      messages,
-      max_tokens: opts.maxTokens ?? 1200,
+      messages: safeMessages,
+      max_tokens: budget(opts.maxTokens, 1200),
       temperature: opts.temperature ?? 0.2,
       stream: false,
       response_format: { type: 'json_object' },
     },
     { signal: opts.signal },
   );
-  const raw = res.choices[0]?.message?.content ?? '{}';
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(`LLM 返回的不是合法 JSON：${raw.slice(0, 200)}`);
+  const choice = res.choices[0];
+  const raw = choice?.message?.content ?? '';
+  const parsed = extractJson(raw);
+  if (parsed === null) {
+    if (choice?.finish_reason === 'length') {
+      throw new Error(
+        `token 预算被推理耗尽（finish_reason=length）：max_tokens=${budget(opts.maxTokens, 1200)}。` +
+          '思考模型的 reasoning 也计入 completion_tokens，请调大预算。',
+      );
+    }
+    throw new Error(`LLM 返回的不是合法 JSON：${raw.slice(0, 200) || '(空内容)'}`);
   }
   return schema.parse(parsed);
 }
@@ -110,28 +158,51 @@ export async function shouldReachOut(
   messages: ChatMessage[],
   opts: ChatOptions = {},
 ): Promise<ReachOutDecision> {
-  const res = await deepseek.chat.completions.create(
-    {
-      model: env.DEEPSEEK_MODEL,
-      messages,
-      tools: [SHOULD_REACH_OUT_TOOL],
-      tool_choice: { type: 'function', function: { name: 'should_reach_out' } },
-      temperature: 0.2,
-      max_tokens: 400,
-      stream: false,
-    },
-    { signal: opts.signal },
-  );
+  const base = {
+    model: env.DEEPSEEK_MODEL,
+    messages,
+    tools: [SHOULD_REACH_OUT_TOOL],
+    temperature: 0.2,
+    max_tokens: budget(opts.maxTokens, 1200),
+    stream: false as const,
+  };
 
-  const call = res.choices[0]?.message?.tool_calls?.[0];
-  if (!call || call.type !== 'function') {
-    throw new Error('模型没有返回 tool_calls');
-  }
-  let args: unknown;
+  let res;
   try {
-    args = JSON.parse(call.function.arguments || '{}');
-  } catch {
-    throw new Error('tool_calls.arguments 不是合法 JSON');
+    res = await deepseek.chat.completions.create(
+      { ...base, tool_choice: { type: 'function', function: { name: 'should_reach_out' } } },
+      { signal: opts.signal },
+    );
+  } catch (err) {
+    // 思考模式（deepseek-flash/reasoner）不支持强制 tool_choice：400 后降级重试一次
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as { status?: number }).status;
+    if (status === 400 && /tool_choice/i.test(message)) {
+      res = await deepseek.chat.completions.create(
+        { ...base, tool_choice: 'auto' },
+        { signal: opts.signal },
+      );
+    } else {
+      throw err;
+    }
   }
-  return ReachOutDecision.parse(args);
+
+  const msg = res.choices[0]?.message;
+  const call = msg?.tool_calls?.[0];
+  if (call && call.type === 'function') {
+    const rawArgs = call.function.arguments || '';
+    const args = extractJson(rawArgs);
+    if (args !== null) return ReachOutDecision.parse(args);
+    throw new Error(
+      rawArgs
+        ? `tool_calls.arguments 不是合法 JSON：${rawArgs.slice(0, 120)}`
+        : 'tool_calls.arguments 为空（多半是 token 预算被推理耗尽）',
+    );
+  }
+
+  // 没走工具调用时，有的模型会直接把 JSON 写进 content
+  const fallback = extractJson(msg?.content ?? '');
+  if (fallback !== null) return ReachOutDecision.parse(fallback);
+
+  throw new Error('模型既没有返回 tool_calls，也没有返回可解析的 JSON');
 }
