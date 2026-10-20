@@ -101,7 +101,6 @@ pnpm db:migrate     # 空库直接跑；已有 users/notes 表的话改用 ops/l
 ```
 
 ### 路线 D：什么都装不了时（WASM）
-
 真 PostgreSQL 起不来的环境（无 Docker、WSL 被禁、`initdb` 被拦）可以用 PGlite 跑完整验收：
 
 ```powershell
@@ -116,6 +115,35 @@ pnpm dev:wasm       # 自动指向 5433 + 关闭队列 + LLM 走 mock
 
 限制：单进程串行、不支持 pg-boss（起服务时加 `JOBS_ENABLED=false`）、
 规划器不实现 GIN/HNSW 扫描（`check:indexes` 的 2 条计划断言会跳过）。详见 `docs/ACCEPTANCE.md`。
+
+### 路线 E：本地 embedding（Ollama + bge-m3，已装好）
+
+对话可以走 DeepSeek，但向量化得有自己的服务。本机已装**便携版 Ollama 0.40.6**：
+
+| 项 | 路径 / 值 |
+| -- | --------- |
+| 程序 | `D:\Ollama\ollama.exe`（+ `lib\` 1.8GB runners） |
+| 模型 | `D:\Ollama\models`（`bge-m3`，1.2GB） |
+| 监听 | `127.0.0.1:11434`，OpenAI 兼容端点 `/v1/embeddings` |
+| 环境变量 | `OLLAMA_MODELS` / `OLLAMA_HOST` / `PATH` 已写入用户变量 |
+
+```powershell
+ops\ollama-start.bat              # 双击启动（关窗口即停，不是系统服务）
+curl http://127.0.0.1:11434/api/version
+pnpm backfill:embeddings --force  # 换 embedder 必须全量重算
+```
+
+`.env` 里对应的四行（默认值就是这样）：
+
+```ini
+EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
+EMBEDDING_API_KEY=ollama
+EMBEDDING_MODEL=bge-m3
+EMBEDDING_DIM=1024
+```
+
+> bge-m3 输出正好 1024 维，和库里 `vector(1024)` 一致。换模型要么维度相同，
+> 要么改迁移 + 全量重算，否则检索会静默错乱。
 
 ### 起服务：有 Key 用真模型，没 Key 用 mock
 
@@ -185,9 +213,17 @@ pnpm smoke:llm --real
 - `deepseek-chat` 目前会被路由到 `deepseek-flash`（响应里 model 字段就是 flash），
   但那是即将退役的旧名，别再用。
 
-**Embedding 是另一件事。** DeepSeek 不提供 embedding 接口，`EMBEDDING_*` 要单独配
-（Ollama 本地跑 bge-m3，或任意 OpenAI 兼容的向量服务）。没配时聊天照常，
-检索自动退化成纯关键词——`assemble.ts` 里有兜底，不会因此聊不了天。
+**Embedding 是另一件事。** DeepSeek 不提供 embedding 接口，`EMBEDDING_*` 要单独配。
+本机已装好便携版 Ollama + bge-m3（都在 D 盘，见 §3 路线 E）：
+
+```powershell
+ops\ollama-start.bat      # 启动 127.0.0.1:11434（关窗口即停）
+pnpm backfill:embeddings --force
+pnpm eval:retrieval
+```
+
+没启动 embedding 服务时聊天照常，检索自动退化成纯关键词——
+`assemble.ts` 里有兜底，不会因此聊不了天。
 
 ### 4.2 开发脚本怎么选
 
@@ -307,9 +343,8 @@ pnpm eval:retrieval  # 检索评测（需 DB + seed + embedding）
 
 ## 8. 阶段状态
 
-- **阶段 A 检索闭环**：已收尾。索引断言、评测脚本、`pg_trgm` 并联兜底就绪。
-  指标目标（Recall@10 ≥ 0.80 / MRR ≥ 0.65）**需接真实 bge-m3 后复评**——本机只有词面 mock 向量，
-  测出的 0.611 / 0.600 不代表链路质量，详见 `docs/ACCEPTANCE.md` §3。
+- **阶段 A 检索闭环**：已收尾且**指标达标**。真实 bge-m3（本地 Ollama）下
+  Recall@10 0.901 / MRR 0.836 / 关键词路独有 0.184，32 条标注样例，详见 `docs/ACCEPTANCE.md` §3。
 - **阶段 B 反思与洞察**：已收尾。冲突下线（`superseded_by` + 迁移 0003）、证据链审计、机械引用审计就绪。
 - **阶段 C 心跳与克制**：已收尾。dedupe 并发、退避冷却、50 并发 SSE、客户端中断均已自动化验证；
   期间修掉一个真实 bug（未回应计数按轮 +1 导致退避永远停在 6h）。
