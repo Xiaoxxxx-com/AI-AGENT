@@ -46,6 +46,14 @@ function exe(name: string): string {
   return file;
 }
 
+/** Windows 常见退出码 → 人话 */
+const EXIT_HINTS: Record<number, string> = {
+  3221226505:
+    '0xC0000409（fail-fast）：进程被系统或安全软件强制终止。多见于沙箱、杀软、或受限终端；请在普通终端重试。',
+  3221225477: '0xC0000005（访问违例）：通常是权限或路径问题。',
+  1: '通用失败，按上面的 stderr 排查。',
+};
+
 function run(name: string, args: string[], opts: { allowFail?: boolean; quiet?: boolean } = {}) {
   const res = spawnSync(exe(name), args, {
     cwd: ROOT,
@@ -58,9 +66,39 @@ function run(name: string, args: string[], opts: { allowFail?: boolean; quiet?: 
     if (res.stderr?.trim()) process.stderr.write(res.stderr);
   }
   if (res.status !== 0 && !opts.allowFail) {
-    throw new Error(`${name} 退出码 ${res.status}`);
+    const code = res.status ?? -1;
+    const hint = EXIT_HINTS[code];
+    throw new Error(`${name} 退出码 ${code}${hint ? `\n  ${hint}` : ''}`);
   }
   return res;
+}
+
+/** 走到这一步说明当前环境跑不起来，把可复制的命令吐出来 */
+function printManualSteps(reason: string): void {
+  const bin = BIN.replace(/\\/g, '/');
+  console.error(`
+[pg] 当前环境无法初始化数据库：${reason}
+
+请在「普通终端」（非管理员、非沙箱）里执行：
+
+  cd "${ROOT}"
+  pnpm pg:setup
+
+如果 still 失败，可手动分步执行（逐条）：
+
+  "${bin}/initdb.exe" -D "${DATA}" -U companion -A trust -E UTF8 --locale=C
+  "${bin}/pg_ctl.exe" -D "${DATA}" -l "${LOG}" -w start
+  "${bin}/createdb.exe" -h 127.0.0.1 -p ${PORT} -U companion ${DB}
+  "${bin}/psql.exe" -h 127.0.0.1 -p ${PORT} -U companion -d ${DB} -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+
+初始化成功后回到项目里继续：
+
+  pnpm db:migrate && pnpm db:seed
+
+在原生 PostgreSQL 起来之前，也可以先用 WASM 版跑开发：
+  终端 1: pnpm pg:wasm
+  终端 2: pnpm dev:wasm
+`);
 }
 
 function status(): string {
@@ -172,6 +210,10 @@ try {
       process.exit(1);
   }
 } catch (err) {
-  console.error(`[pg] ${err instanceof Error ? err.message : String(err)}`);
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`[pg] ${message}`);
+  if (cmd === 'setup') {
+    printManualSteps(message.split('\n')[0] ?? message);
+  }
   process.exit(1);
 }

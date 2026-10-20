@@ -74,6 +74,10 @@ pnpm db:migrate               # 三条迁移：扩展 → 建表 → HNSW/GIN
 pnpm db:seed                  # 30 条中文笔记
 ```
 
+也可以直接双击 `ops\pg-setup.bat`（会自动暂停并提示下一步）。
+如果 `pg:setup` 报 `0xC0000409`，说明进程被沙箱/杀 soft 拦截，换普通终端重跑即可——
+脚本会自动打印可复制的手动分步命令。
+
 其他常用命令：`pnpm pg:start` / `pnpm pg:stop` / `pnpm pg:status` / `pnpm pg:psql`。
 
 数据在 `var/pgdata`，日志在 `var/pg.log`，只监听 `127.0.0.1`。
@@ -103,6 +107,10 @@ pnpm db:migrate     # 空库直接跑；已有 users/notes 表的话改用 ops/l
 pnpm pg:wasm        # PostgreSQL 18.6(WASM) + pgvector 0.8.7，监听 127.0.0.1:5433
 $env:DATABASE_URL="postgres://companion:companion_dev@127.0.0.1:5433/companion"
 pnpm db:migrate && pnpm db:seed
+
+# 起服务（另开一个窗口）
+pnpm mock:llm       # 没有 DeepSeek Key 时
+pnpm dev:wasm       # 自动指向 5433 + 关闭队列 + LLM 走 mock
 ```
 
 限制：单进程串行、不支持 pg-boss（起服务时加 `JOBS_ENABLED=false`）、
